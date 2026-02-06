@@ -24,4 +24,4 @@ api_version = "2026-04"
 scopes = "write_products,read_orders"
 
 [auth]
-redirect_urls = [ "https://example.com/api/auth" ]
+redirect_urls = [ "https://voordeelgordijnen-workflow-admin-production.up.railway.app/auth/callback" ]
