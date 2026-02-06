@@ -2,7 +2,7 @@
 
 client_id = "acf397b41cdec29a952576224862acce"
 name = "Vogo workflow admin"
-application_url = "https://example.com"
+application_url = "https://voordeelgordijnen-workflow-admin-production.up.railway.app"
 embedded = true
 
 [build]
