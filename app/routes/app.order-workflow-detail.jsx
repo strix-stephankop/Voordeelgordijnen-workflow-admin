@@ -2,6 +2,12 @@ import { json } from "@remix-run/node";
 import { authenticate } from "../shopify.server";
 import { getExecution, retryExecution } from "../n8n.server";
 
+const CORS_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization",
+};
+
 /**
  * Extract the n8n execution ID from a workflow URL.
  * Handles URLs like:
@@ -81,7 +87,22 @@ async function fetchOne(url) {
 }
 
 export const action = async ({ request }) => {
-  await authenticate.admin(request);
+  // Handle CORS preflight
+  if (request.method === "OPTIONS") {
+    return new Response(null, { status: 204, headers: CORS_HEADERS });
+  }
+
+  try {
+    await authenticate.admin(request);
+  } catch (authResponse) {
+    if (authResponse instanceof Response) {
+      return json(
+        { ok: false, error: "Authentication failed" },
+        { status: 401, headers: CORS_HEADERS },
+      );
+    }
+    throw authResponse;
+  }
 
   const formData = await request.formData();
   const url = formData.get("url") || "";
@@ -91,21 +112,39 @@ export const action = async ({ request }) => {
   console.log("[order-workflow-detail] Extracted execution ID:", executionId);
 
   if (!executionId) {
-    return json({ ok: false, error: "No execution ID found in URL" }, { status: 400 });
+    return json({ ok: false, error: "No execution ID found in URL" }, { status: 400, headers: CORS_HEADERS });
   }
 
   try {
     const result = await retryExecution(executionId, { loadWorkflow: true });
     console.log("[order-workflow-detail] Retry result:", JSON.stringify(result));
-    return json({ ok: true, result });
+    return json({ ok: true, result }, { headers: CORS_HEADERS });
   } catch (e) {
     console.error(`[order-workflow-detail] Retry failed for ${executionId}:`, e.message);
-    return json({ ok: false, error: e.message }, { status: 500 });
+    return json({ ok: false, error: e.message }, { status: 500, headers: CORS_HEADERS });
   }
 };
 
 export const loader = async ({ request }) => {
-  await authenticate.admin(request);
+  // Handle CORS preflight
+  if (request.method === "OPTIONS") {
+    return new Response(null, { status: 204, headers: CORS_HEADERS });
+  }
+
+  try {
+    await authenticate.admin(request);
+  } catch (authResponse) {
+    // authenticate.admin may throw a Response (redirect to auth flow).
+    // Re-throw with CORS headers so the extension sees a proper error.
+    if (authResponse instanceof Response) {
+      console.error("[order-workflow-detail] Auth failed, status:", authResponse.status);
+      return json(
+        { error: "Authentication failed" },
+        { status: 401, headers: CORS_HEADERS },
+      );
+    }
+    throw authResponse;
+  }
 
   const url = new URL(request.url);
   const workflowUrl = url.searchParams.get("workflowUrl") || "";
@@ -116,5 +155,5 @@ export const loader = async ({ request }) => {
     finisherUrl ? fetchOne(finisherUrl) : Promise.resolve(null),
   ]);
 
-  return json({ workflow, finisher });
+  return json({ workflow, finisher }, { headers: CORS_HEADERS });
 };

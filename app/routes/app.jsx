@@ -23,6 +23,7 @@ export default function App() {
           Orders
         </Link>
         <Link to="/app/executions">Executions</Link>
+        <Link to="/app/softr">Softr</Link>
       </NavMenu>
       <Outlet />
     </AppProvider>

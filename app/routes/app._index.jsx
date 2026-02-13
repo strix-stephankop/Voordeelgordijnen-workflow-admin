@@ -23,10 +23,18 @@ import {
   Select,
   Thumbnail,
   Button,
+  Collapsible,
+  Icon,
 } from "@shopify/polaris";
+import { ChevronDownIcon, ChevronRightIcon } from "@shopify/polaris-icons";
 import { TitleBar, Modal, useAppBridge } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
 import { syncExecutions } from "../n8n-sync.server";
+import {
+  searchSoftrRecords,
+  hasCachedData,
+  syncSoftrData,
+} from "../softr.server";
 
 export const loader = async ({ request }) => {
   const { admin } = await authenticate.admin(request);
@@ -38,11 +46,12 @@ export const loader = async ({ request }) => {
   syncExecutions().catch(() => {});
 
   if (!q) {
-    return json({ orders: [], query: q, selectedOrder, error: null });
+    return json({ orders: [], query: q, selectedOrder, error: null, softrResults: [] });
   }
 
-  try {
-    const response = await admin.graphql(
+  // Run Shopify + Softr searches in parallel
+  const [shopifyResult, softrResult] = await Promise.allSettled([
+    admin.graphql(
       `#graphql
       query orders($query: String!) {
         orders(first: 10, query: $query) {
@@ -67,16 +76,28 @@ export const loader = async ({ request }) => {
         }
       }`,
       { variables: { query: `name:${q}` } },
-    );
+    ).then((r) => r.json()),
+    (async () => {
+      if (!(await hasCachedData())) await syncSoftrData();
+      return searchSoftrRecords(q);
+    })(),
+  ]);
 
-    const data = await response.json();
-    const orders = data.data?.orders?.nodes ?? [];
-
-    return json({ orders, query: q, selectedOrder, error: null });
-  } catch (e) {
-    console.error("Failed to search orders:", e.message);
-    return json({ orders: [], query: q, selectedOrder, error: e.message });
+  let orders = [];
+  let error = null;
+  if (shopifyResult.status === "fulfilled") {
+    orders = shopifyResult.value.data?.orders?.nodes ?? [];
+  } else {
+    console.error("Failed to search orders:", shopifyResult.reason?.message);
+    error = shopifyResult.reason?.message ?? "Failed to search orders";
   }
+
+  const softrResults = softrResult.status === "fulfilled" ? softrResult.value : [];
+  if (softrResult.status === "rejected") {
+    console.error("Softr search failed:", softrResult.reason?.message);
+  }
+
+  return json({ orders, query: q, selectedOrder, error, softrResults });
 };
 
 // ─── Badge maps ───
@@ -445,10 +466,131 @@ function OrderDetailPanel({ order, workflowData, workflowLoading, onOpenModal, o
   );
 }
 
+// ─── Softr results section ───
+
+function SoftrRecordCard({ record, tableId }) {
+  const fetcher = useFetcher();
+  const isDeleting = fetcher.state !== "idle";
+  const isDeleted = fetcher.data?.ok;
+
+  if (isDeleted) return null;
+
+  return (
+    <Box padding="300" background="bg-surface-secondary" borderRadius="200">
+      <InlineStack align="space-between" blockAlign="start" wrap={false}>
+        <BlockStack gap="100">
+          {Object.entries(record.fields).map(
+            ([fieldName, value]) =>
+              value != null &&
+              value !== "" &&
+              !(Array.isArray(value) && value.length === 0) && (
+                <InlineStack key={fieldName} gap="200" wrap={false}>
+                  <Text variant="bodySm" tone="subdued" as="span">
+                    {fieldName}:
+                  </Text>
+                  {Array.isArray(value) && value[0]?.url ? (
+                    <InlineStack gap="200">
+                      {value.map((att, i) => (
+                        <Button
+                          key={i}
+                          size="slim"
+                          variant="plain"
+                          url={att.url}
+                          target="_blank"
+                        >
+                          {att.filename}
+                        </Button>
+                      ))}
+                    </InlineStack>
+                  ) : (
+                    <Text variant="bodySm" as="span" truncate>
+                      {String(value)}
+                    </Text>
+                  )}
+                </InlineStack>
+              ),
+          )}
+        </BlockStack>
+        <fetcher.Form method="post" action="/app/softr-search">
+          <input type="hidden" name="tableId" value={tableId} />
+          <input type="hidden" name="recordId" value={record.id} />
+          <Button
+            size="slim"
+            tone="critical"
+            variant="plain"
+            loading={isDeleting}
+            submit
+          >
+            Delete
+          </Button>
+        </fetcher.Form>
+      </InlineStack>
+    </Box>
+  );
+}
+
+function SoftrResultsSection({ results, query }) {
+  const [openTables, setOpenTables] = useState({});
+
+  function toggleTable(tableId) {
+    setOpenTables((prev) => ({ ...prev, [tableId]: !prev[tableId] }));
+  }
+
+  return (
+    <Card>
+      <BlockStack gap="300">
+        <Text variant="headingSm" as="h3">Softr Records</Text>
+        {results.length === 0 && (
+          <Text variant="bodySm" tone="subdued">
+            No Softr records found for "{query}"
+          </Text>
+        )}
+        {results.map((group) => {
+          const isOpen = openTables[group.tableId] !== false; // default open
+          return (
+            <div key={group.tableId}>
+              <div
+                onClick={() => toggleTable(group.tableId)}
+                style={{ cursor: "pointer", padding: "8px 0" }}
+              >
+                <InlineStack align="space-between" blockAlign="center">
+                  <InlineStack gap="200" blockAlign="center">
+                    <Icon
+                      source={isOpen ? ChevronDownIcon : ChevronRightIcon}
+                      tone="subdued"
+                    />
+                    <Text variant="bodySm" fontWeight="semibold">
+                      {group.tableName}
+                    </Text>
+                  </InlineStack>
+                  <Badge tone="info">
+                    {group.total} {group.total === 1 ? "record" : "records"}
+                  </Badge>
+                </InlineStack>
+              </div>
+              <Collapsible open={isOpen} transition={{ duration: "200ms" }}>
+                <BlockStack gap="200">
+                  {group.records.map((record) => (
+                    <SoftrRecordCard
+                      key={record.id}
+                      record={record}
+                      tableId={group.tableId}
+                    />
+                  ))}
+                </BlockStack>
+              </Collapsible>
+            </div>
+          );
+        })}
+      </BlockStack>
+    </Card>
+  );
+}
+
 // ─── Main page ───
 
 export default function OrderSearch() {
-  const { orders, query, selectedOrder, error } = useLoaderData();
+  const { orders, query, selectedOrder, error, softrResults } = useLoaderData();
   const navigation = useNavigation();
   const shopify = useAppBridge();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -676,11 +818,14 @@ export default function OrderSearch() {
               </Card>
             </BlockStack>
           ) : orders.length === 0 ? (
-            <Card>
-              <EmptyState heading="No orders found" image="https://cdn.shopify.com/s/files/1/0262/4071/2726/files/emptystate-files.png">
-                <p>No orders matched "{query}". Try a different search term.</p>
-              </EmptyState>
-            </Card>
+            <BlockStack gap="400">
+              <Card>
+                <EmptyState heading="No orders found" image="https://cdn.shopify.com/s/files/1/0262/4071/2726/files/emptystate-files.png">
+                  <p>No orders matched "{query}". Try a different search term.</p>
+                </EmptyState>
+              </Card>
+              <SoftrResultsSection results={softrResults} query={query} />
+            </BlockStack>
           ) : (
             <BlockStack gap="400">
               {orders.length > 1 && (
@@ -700,14 +845,17 @@ export default function OrderSearch() {
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px", alignItems: "start" }}>
                 <LineItemsPanel order={selected} />
                 <div style={{ position: "sticky", top: "60px" }}>
-                  <OrderDetailPanel
-                    order={selected}
-                    workflowData={workflowData}
-                    workflowLoading={workflowLoading}
-                    onOpenModal={handleOpenModal}
-                    onRetry={handleRetry}
-                    retryingType={retryingType}
-                  />
+                  <BlockStack gap="400">
+                    <OrderDetailPanel
+                      order={selected}
+                      workflowData={workflowData}
+                      workflowLoading={workflowLoading}
+                      onOpenModal={handleOpenModal}
+                      onRetry={handleRetry}
+                      retryingType={retryingType}
+                    />
+                    <SoftrResultsSection results={softrResults} query={query} />
+                  </BlockStack>
                 </div>
               </div>
             </BlockStack>

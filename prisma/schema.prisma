@@ -33,6 +33,35 @@ model Session {
   refreshTokenExpires DateTime?
 }
 
+model SoftrTable {
+  id             String       @id
+  name           String
+  description    String?
+  primaryFieldId String?
+  defaultViewId  String?
+  syncedAt       DateTime     @default(now())
+  fields         SoftrField[]
+}
+
+model SoftrField {
+  id                   String    @id
+  tableId              String
+  name                 String
+  type                 String
+  required             Boolean   @default(false)
+  readonly             Boolean   @default(false)
+  locked               Boolean   @default(false)
+  allowMultipleEntries Boolean   @default(false)
+  defaultValue         String?
+  options              String?   // JSON string
+  createdAt            DateTime?
+  updatedAt            DateTime?
+
+  table SoftrTable @relation(fields: [tableId], references: [id], onDelete: Cascade)
+
+  @@index([tableId])
+}
+
 model ExecutionOrder {
   executionId String    @id
   orderNumber String?

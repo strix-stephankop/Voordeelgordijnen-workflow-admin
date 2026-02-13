@@ -26,7 +26,9 @@ import {
 } from "@shopify/polaris";
 import { TitleBar } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
-import { getExecutions, getWorkflows, extractFromExecutionData } from "../n8n.server";
+import { getExecutions, getWorkflows } from "../n8n.server";
+import { syncExecutions } from "../n8n-sync.server";
+import prisma from "../db.server";
 
 const PAGE_SIZE = 10;
 
@@ -45,18 +47,32 @@ export const loader = async ({ request }) => {
     workflows = (await getWorkflows().catch(() => ({ data: [] }))).data ?? [];
   } catch {}
 
-  // Paginated fetch — single API call with includeData
+  // Keep local DB in sync (fire-and-forget)
+  syncExecutions().catch(() => {});
+
+  // Lean fetch — no includeData, just metadata
   try {
     const response = await getExecutions({
       status: status || undefined,
       workflowId: workflowId || undefined,
       cursor: cursor || undefined,
       limit: PAGE_SIZE,
-      includeData: true,
     });
 
     const executionsList = response.data ?? [];
     const nextCursor = response.nextCursor ?? null;
+
+    // Look up orderNumbers from local DB instead of parsing execution data
+    const executionIds = executionsList.map((e) => String(e.id));
+    const dbRecords = executionIds.length > 0
+      ? await prisma.executionOrder.findMany({
+          where: { executionId: { in: executionIds } },
+          select: { executionId: true, orderNumber: true },
+        })
+      : [];
+    const orderNumberMap = Object.fromEntries(
+      dbRecords.map((r) => [r.executionId, r.orderNumber]),
+    );
 
     const executions = executionsList.map((exec) => ({
       id: exec.id,
@@ -65,7 +81,7 @@ export const loader = async ({ request }) => {
       startedAt: exec.startedAt,
       stoppedAt: exec.stoppedAt,
       mode: exec.mode,
-      orderNumber: extractFromExecutionData(exec, "orderNumber") ?? null,
+      orderNumber: orderNumberMap[String(exec.id)] ?? null,
     }));
 
     return json({
