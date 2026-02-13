@@ -139,6 +139,32 @@ async function softrPost(path, body) {
 }
 
 /**
+ * Update fields on a Softr record.
+ * @param {string} tableId
+ * @param {string} recordId
+ * @param {Record<string, any>} fields – { fieldId: newValue }
+ */
+export async function updateSoftrRecord(tableId, recordId, fields) {
+  const databaseId = getDatabaseId();
+  const url = `${SOFTR_BASE}/databases/${databaseId}/tables/${tableId}/records/${recordId}`;
+  const response = await fetch(url, {
+    method: "PATCH",
+    headers: {
+      "Softr-Api-Key": getApiKey(),
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ fields }),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Softr API error ${response.status}: ${text}`);
+  }
+
+  return response.json();
+}
+
+/**
  * Delete a record from a Softr table.
  */
 export async function deleteSoftrRecord(tableId, recordId) {
@@ -225,6 +251,12 @@ export async function searchSoftrRecords(query, { limit = 10 } = {}) {
 
     console.log(`[softr-search] ${table.name}: ${result.data?.length ?? 0} records, total=${result.metadata?.total}`);
 
+    // Build a fieldName→fieldId lookup for this table
+    const fieldIds = {};
+    for (const f of table.fields) {
+      fieldIds[f.name] = f.id;
+    }
+
     const records = (result.data ?? []).map((record) => {
       // Resolve field IDs to field names
       const fields = {};
@@ -233,7 +265,7 @@ export async function searchSoftrRecords(query, { limit = 10 } = {}) {
         const name = fieldDef ? fieldDef.name : fieldId;
         fields[name] = resolveFieldValue(value);
       }
-      return { id: record.id, fields };
+      return { id: record.id, fields, fieldIds };
     });
 
     return {

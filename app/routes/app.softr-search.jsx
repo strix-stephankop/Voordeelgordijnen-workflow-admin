@@ -5,17 +5,34 @@ import {
   hasCachedData,
   syncSoftrData,
   deleteSoftrRecord,
+  updateSoftrRecord,
 } from "../softr.server";
 
 export const action = async ({ request }) => {
   await authenticate.admin(request);
 
   const formData = await request.formData();
+  const intent = formData.get("_action");
   const tableId = formData.get("tableId");
   const recordId = formData.get("recordId");
 
   if (!tableId || !recordId) {
     return json({ ok: false, error: "Missing tableId or recordId" }, { status: 400 });
+  }
+
+  if (intent === "update") {
+    const fieldId = formData.get("fieldId");
+    const value = formData.get("value");
+    if (!fieldId) {
+      return json({ ok: false, error: "Missing fieldId" }, { status: 400 });
+    }
+    try {
+      await updateSoftrRecord(tableId, recordId, { [fieldId]: value });
+      return json({ ok: true });
+    } catch (e) {
+      console.error("Softr update failed:", e.message);
+      return json({ ok: false, error: e.message }, { status: 500 });
+    }
   }
 
   try {

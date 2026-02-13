@@ -25,6 +25,7 @@ import {
   Button,
   Collapsible,
   Icon,
+  Popover,
 } from "@shopify/polaris";
 import { ChevronDownIcon, ChevronRightIcon } from "@shopify/polaris-icons";
 import { TitleBar, Modal, useAppBridge } from "@shopify/app-bridge-react";
@@ -468,6 +469,213 @@ function OrderDetailPanel({ order, workflowData, workflowLoading, onOpenModal, o
 
 // ─── Softr results section ───
 
+const MAX_VALUE_LENGTH = 80;
+
+function SoftrFieldValue({ fieldName, value, fieldId, tableId, recordId }) {
+  // mode: "viewing" | "editing" | "confirming" | "saving"
+  const [mode, setMode] = useState("viewing");
+  const [expanded, setExpanded] = useState(false);
+  const [editValue, setEditValue] = useState("");
+  const fetcher = useFetcher();
+  const inputRef = useRef(null);
+  const shopify = useAppBridge();
+  const isEmpty = value == null || value === "" || (Array.isArray(value) && value.length === 0);
+  const str = isEmpty ? "" : String(value);
+  const isLong = str.length > MAX_VALUE_LENGTH;
+  const popoverOpen = mode !== "viewing";
+
+  const isAttachment = !isEmpty && Array.isArray(value) && value[0]?.url;
+
+  function startEditing() {
+    if (isAttachment || !fieldId) return;
+    setEditValue(str);
+    setMode("editing");
+  }
+
+  function cancel() {
+    setMode("viewing");
+    setEditValue("");
+  }
+
+  function handleSave() {
+    if (editValue === str) {
+      cancel();
+      return;
+    }
+    setMode("confirming");
+  }
+
+  function confirmSave() {
+    setMode("saving");
+    fetcher.submit(
+      { _action: "update", tableId, recordId, fieldId, value: editValue },
+      { method: "POST", action: "/app/softr-search" },
+    );
+  }
+
+  function backToEditing() {
+    setMode("editing");
+  }
+
+  useEffect(() => {
+    if (mode === "editing" && inputRef.current) {
+      inputRef.current.querySelector("input")?.focus({ preventScroll: true });
+    }
+  }, [mode]);
+
+  // After successful save → back to viewing + toast
+  useEffect(() => {
+    if (mode === "saving" && fetcher.state === "idle" && fetcher.data?.ok) {
+      setMode("viewing");
+      setEditValue("");
+      shopify.toast.show("Field updated");
+    }
+  }, [mode, fetcher.state, fetcher.data]);
+
+  function handleKeyDown(e) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      handleSave();
+    } else if (e.key === "Escape") {
+      cancel();
+    }
+  }
+
+  // ── Attachment (non-editable) ──
+  if (isAttachment) {
+    return (
+      <InlineStack gap="200">
+        {value.map((att, i) => (
+          <Button key={i} size="slim" variant="plain" url={att.url} target="_blank">
+            {att.filename}
+          </Button>
+        ))}
+      </InlineStack>
+    );
+  }
+
+  // ── Popover content by mode ──
+  let popoverContent = null;
+  if (mode === "saving") {
+    popoverContent = (
+      <Box padding="300">
+        <InlineStack gap="200" blockAlign="center">
+          <Spinner size="small" />
+          <Text variant="bodySm" as="span" tone="subdued">Saving…</Text>
+        </InlineStack>
+      </Box>
+    );
+  } else if (mode === "confirming") {
+    popoverContent = (
+      <Box padding="300">
+        <BlockStack gap="200">
+          <Text variant="bodySm" as="span" tone="subdued">
+            {isEmpty ? (
+              <span style={{ fontStyle: "italic" }}>Empty</span>
+            ) : (
+              <span style={{ textDecoration: "line-through" }}>
+                {str.length > 60 ? `${str.slice(0, 60)}…` : str}
+              </span>
+            )}
+          </Text>
+          <InlineStack gap="100" blockAlign="center">
+            <Text variant="bodySm" as="span">→</Text>
+            <Text variant="bodySm" as="span" fontWeight="semibold">
+              {editValue.length > 60 ? `${editValue.slice(0, 60)}…` : editValue}
+            </Text>
+          </InlineStack>
+          <InlineStack gap="200">
+            <Button size="micro" variant="primary" onClick={confirmSave}>Confirm</Button>
+            <Button size="micro" onClick={backToEditing}>Back</Button>
+          </InlineStack>
+        </BlockStack>
+      </Box>
+    );
+  } else if (mode === "editing") {
+    popoverContent = (
+      <Box padding="300">
+        <BlockStack gap="200">
+          <div ref={inputRef}>
+            <TextField
+              value={editValue}
+              onChange={setEditValue}
+              onKeyDown={handleKeyDown}
+              autoComplete="off"
+              size="slim"
+              label={fieldName}
+              labelHidden
+            />
+          </div>
+          <InlineStack gap="200">
+            <Button size="micro" variant="primary" onClick={handleSave}>Save</Button>
+            <Button size="micro" onClick={cancel}>Cancel</Button>
+          </InlineStack>
+        </BlockStack>
+      </Box>
+    );
+  }
+
+  // ── Activator (always the value text) ──
+  const activator = isEmpty ? (
+    <span
+      onClick={startEditing}
+      style={{ cursor: fieldId ? "pointer" : "default", borderBottom: fieldId ? "1px dashed var(--p-color-border)" : "none" }}
+    >
+      <Text variant="bodySm" as="span" tone="subdued" fontStyle="italic">
+        {fieldId ? "Empty – click to add" : "—"}
+      </Text>
+    </span>
+  ) : isLong ? (
+    <div style={{ minWidth: 0, flex: 1 }}>
+      <span
+        onClick={startEditing}
+        style={{ cursor: fieldId ? "pointer" : "default", borderBottom: fieldId ? "1px dashed var(--p-color-border)" : "none" }}
+      >
+        <Text variant="bodySm" as="span">
+          {expanded ? str : `${str.slice(0, MAX_VALUE_LENGTH)}…`}
+        </Text>
+      </span>
+      <button
+        onClick={(e) => { e.stopPropagation(); setExpanded((p) => !p); }}
+        style={{
+          background: "none",
+          border: "none",
+          padding: 0,
+          marginLeft: 4,
+          color: "var(--p-color-text-emphasis)",
+          cursor: "pointer",
+          fontSize: "12px",
+        }}
+      >
+        {expanded ? "less" : "more"}
+      </button>
+    </div>
+  ) : (
+    <span
+      onClick={startEditing}
+      style={{ cursor: fieldId ? "pointer" : "default", borderBottom: fieldId ? "1px dashed var(--p-color-border)" : "none" }}
+    >
+      <Text variant="bodySm" as="span" truncate>
+        {str}
+      </Text>
+    </span>
+  );
+
+  if (!fieldId) return activator;
+
+  return (
+    <Popover
+      active={popoverOpen}
+      activator={activator}
+      onClose={cancel}
+      preferredAlignment="left"
+      autofocusTarget="none"
+    >
+      {popoverContent}
+    </Popover>
+  );
+}
+
 function SoftrRecordCard({ record, tableId }) {
   const fetcher = useFetcher();
   const isDeleting = fetcher.state !== "idle";
@@ -479,37 +687,20 @@ function SoftrRecordCard({ record, tableId }) {
     <Box padding="300" background="bg-surface-secondary" borderRadius="200">
       <InlineStack align="space-between" blockAlign="start" wrap={false}>
         <BlockStack gap="100">
-          {Object.entries(record.fields).map(
-            ([fieldName, value]) =>
-              value != null &&
-              value !== "" &&
-              !(Array.isArray(value) && value.length === 0) && (
-                <InlineStack key={fieldName} gap="200" wrap={false}>
-                  <Text variant="bodySm" tone="subdued" as="span">
-                    {fieldName}:
-                  </Text>
-                  {Array.isArray(value) && value[0]?.url ? (
-                    <InlineStack gap="200">
-                      {value.map((att, i) => (
-                        <Button
-                          key={i}
-                          size="slim"
-                          variant="plain"
-                          url={att.url}
-                          target="_blank"
-                        >
-                          {att.filename}
-                        </Button>
-                      ))}
-                    </InlineStack>
-                  ) : (
-                    <Text variant="bodySm" as="span" truncate>
-                      {String(value)}
-                    </Text>
-                  )}
-                </InlineStack>
-              ),
-          )}
+          {Object.entries(record.fields).map(([fieldName, value]) => (
+            <InlineStack key={fieldName} gap="200" wrap={false}>
+              <Text variant="bodySm" tone="subdued" as="span">
+                {fieldName}:
+              </Text>
+              <SoftrFieldValue
+                fieldName={fieldName}
+                value={value}
+                fieldId={record.fieldIds?.[fieldName]}
+                tableId={tableId}
+                recordId={record.id}
+              />
+            </InlineStack>
+          ))}
         </BlockStack>
         <fetcher.Form method="post" action="/app/softr-search">
           <input type="hidden" name="tableId" value={tableId} />
@@ -653,7 +844,7 @@ export default function OrderSearch() {
       }
       params.delete("selected");
       setSearchParams(params);
-    }, 500);
+    }, 800);
 
     return () => clearTimeout(debounceRef.current);
   }, [searchInput]);
