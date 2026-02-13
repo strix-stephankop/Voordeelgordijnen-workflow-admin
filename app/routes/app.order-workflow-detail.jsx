@@ -1,6 +1,7 @@
 import { json } from "@remix-run/node";
 import { authenticate } from "../shopify.server";
 import { getExecution, retryExecution } from "../n8n.server";
+import { appendChangeLog } from "../changelog.server";
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -92,8 +93,9 @@ export const action = async ({ request }) => {
     return new Response(null, { status: 204, headers: CORS_HEADERS });
   }
 
+  let admin;
   try {
-    await authenticate.admin(request);
+    ({ admin } = await authenticate.admin(request));
   } catch (authResponse) {
     if (authResponse instanceof Response) {
       return json(
@@ -106,6 +108,7 @@ export const action = async ({ request }) => {
 
   const formData = await request.formData();
   const url = formData.get("url") || "";
+  const orderGid = formData.get("orderGid") || "";
   console.log("[order-workflow-detail] Retry requested for URL:", url);
 
   const executionId = extractExecutionId(url);
@@ -118,6 +121,12 @@ export const action = async ({ request }) => {
   try {
     const result = await retryExecution(executionId, { loadWorkflow: true });
     console.log("[order-workflow-detail] Retry result:", JSON.stringify(result));
+    if (orderGid) {
+      await appendChangeLog(admin, orderGid, {
+        action: "workflow_retry",
+        executionId,
+      });
+    }
     return json({ ok: true, result }, { headers: CORS_HEADERS });
   } catch (e) {
     console.error(`[order-workflow-detail] Retry failed for ${executionId}:`, e.message);

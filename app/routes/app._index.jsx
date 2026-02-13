@@ -26,6 +26,7 @@ import {
   Collapsible,
   Icon,
   Popover,
+  DataTable,
 } from "@shopify/polaris";
 import { ChevronDownIcon, ChevronRightIcon } from "@shopify/polaris-icons";
 import { TitleBar, Modal, useAppBridge } from "@shopify/app-bridge-react";
@@ -41,7 +42,28 @@ export const loader = async ({ request }) => {
   const { admin } = await authenticate.admin(request);
 
   const url = new URL(request.url);
-  const q = url.searchParams.get("q") || "";
+
+  // Admin link extension passes the numeric order ID as ?id=123456
+  // Construct the GID, look up the order name, and use it as the search query.
+  let q = url.searchParams.get("q") || "";
+  const rawId = url.searchParams.get("id");
+  if (!q && rawId && /^\d+$/.test(rawId)) {
+    try {
+      const result = await admin.graphql(
+        `#graphql
+        query orderName($id: ID!) {
+          order(id: $id) { name }
+        }`,
+        { variables: { id: `gid://shopify/Order/${rawId}` } },
+      ).then((r) => r.json());
+      const name = result.data?.order?.name;
+      if (name) {
+        q = name.replace(/^#/, "");
+      }
+    } catch (e) {
+      console.error("[loader] Failed to resolve order ID:", e.message);
+    }
+  }
   const selectedOrder = url.searchParams.get("selected") || "";
 
   syncExecutions().catch(() => {});
@@ -65,6 +87,7 @@ export const loader = async ({ request }) => {
             totalPriceSet { shopMoney { amount currencyCode } }
             n8nWorkflowUrl: metafield(namespace: "custom", key: "n8n_workflow_url") { value }
             n8nOrderFinisherUrl: metafield(namespace: "custom", key: "n8n_order_finisher_url") { value }
+            changeLog: metafield(namespace: "custom", key: "change_log") { value }
             lineItems(first: 50) {
               nodes {
                 id
@@ -407,7 +430,32 @@ function DetailRow({ label, value }) {
 
 // ─── Order detail panel ───
 
-function OrderDetailPanel({ order, workflowData, workflowLoading, onOpenModal, onRetry, retryingType }) {
+function formatChangeLogDetails(entry) {
+  switch (entry.action) {
+    case "softr_field_update":
+      return `Updated ${entry.field} from "${entry.oldValue || ""}" to "${entry.newValue || ""}"`;
+    case "softr_record_delete":
+      return `Deleted record from ${entry.table}`;
+    case "workflow_retry":
+      return `Retried workflow execution${entry.executionId ? ` #${entry.executionId}` : ""}`;
+    case "order_resend":
+      return "Resent order to webhook";
+    default:
+      return entry.action;
+  }
+}
+
+function formatChangeLogAction(action) {
+  switch (action) {
+    case "softr_field_update": return "Field Update";
+    case "softr_record_delete": return "Record Delete";
+    case "workflow_retry": return "Workflow Retry";
+    case "order_resend": return "Order Resend";
+    default: return action;
+  }
+}
+
+function OrderDetailPanel({ order, workflowData, workflowLoading, onOpenModal, onRetry, retryingType, onOpenChangelog, onResendOrder, isResending }) {
   if (!order) {
     return (
       <Card>
@@ -429,7 +477,13 @@ function OrderDetailPanel({ order, workflowData, workflowLoading, onOpenModal, o
     <Card>
       <Box padding="400">
         <BlockStack gap="400">
-          <Text variant="headingLg" as="h2">{order.name}</Text>
+          <InlineStack align="space-between" blockAlign="center">
+            <Text variant="headingLg" as="h2">{order.name}</Text>
+            <InlineStack gap="200">
+              <Button size="slim" variant="plain" onClick={onOpenChangelog}>Change Log</Button>
+              <Button size="slim" onClick={onResendOrder} loading={isResending}>Resend Order</Button>
+            </InlineStack>
+          </InlineStack>
 
           <Divider />
 
@@ -471,7 +525,7 @@ function OrderDetailPanel({ order, workflowData, workflowLoading, onOpenModal, o
 
 const MAX_VALUE_LENGTH = 80;
 
-function SoftrFieldValue({ fieldName, value, fieldId, tableId, recordId }) {
+function SoftrFieldValue({ fieldName, value, fieldId, tableId, recordId, orderGid }) {
   // mode: "viewing" | "editing" | "confirming" | "saving"
   const [mode, setMode] = useState("viewing");
   const [expanded, setExpanded] = useState(false);
@@ -508,7 +562,7 @@ function SoftrFieldValue({ fieldName, value, fieldId, tableId, recordId }) {
   function confirmSave() {
     setMode("saving");
     fetcher.submit(
-      { _action: "update", tableId, recordId, fieldId, value: editValue },
+      { _action: "update", tableId, recordId, fieldId, fieldName, value: editValue, oldValue: str, orderGid: orderGid || "" },
       { method: "POST", action: "/app/softr-search" },
     );
   }
@@ -676,51 +730,60 @@ function SoftrFieldValue({ fieldName, value, fieldId, tableId, recordId }) {
   );
 }
 
-function SoftrRecordCard({ record, tableId }) {
+function SoftrRecordCard({ record, tableId, orderGid }) {
   const fetcher = useFetcher();
   const isDeleting = fetcher.state !== "idle";
   const isDeleted = fetcher.data?.ok;
 
   if (isDeleted) return null;
 
+  const rows = Object.entries(record.fields).map(([fieldName, value]) => [
+    <Text variant="bodySm" tone="subdued" as="span" key={`label-${fieldName}`}>
+      {fieldName}
+    </Text>,
+    <SoftrFieldValue
+      key={`value-${fieldName}`}
+      fieldName={fieldName}
+      value={value}
+      fieldId={record.fieldIds?.[fieldName]}
+      tableId={tableId}
+      recordId={record.id}
+      orderGid={orderGid}
+    />,
+  ]);
+
   return (
-    <Box padding="300" background="bg-surface-secondary" borderRadius="200">
-      <InlineStack align="space-between" blockAlign="start" wrap={false}>
-        <BlockStack gap="100">
-          {Object.entries(record.fields).map(([fieldName, value]) => (
-            <InlineStack key={fieldName} gap="200" wrap={false}>
-              <Text variant="bodySm" tone="subdued" as="span">
-                {fieldName}:
-              </Text>
-              <SoftrFieldValue
-                fieldName={fieldName}
-                value={value}
-                fieldId={record.fieldIds?.[fieldName]}
-                tableId={tableId}
-                recordId={record.id}
-              />
-            </InlineStack>
-          ))}
-        </BlockStack>
-        <fetcher.Form method="post" action="/app/softr-search">
-          <input type="hidden" name="tableId" value={tableId} />
-          <input type="hidden" name="recordId" value={record.id} />
-          <Button
-            size="slim"
-            tone="critical"
-            variant="plain"
-            loading={isDeleting}
-            submit
-          >
-            Delete
-          </Button>
-        </fetcher.Form>
-      </InlineStack>
-    </Box>
+    <Card>
+      <BlockStack gap="200">
+        <InlineStack align="space-between" blockAlign="center">
+          <Text variant="headingSm" as="h4">Record</Text>
+          <fetcher.Form method="post" action="/app/softr-search">
+            <input type="hidden" name="tableId" value={tableId} />
+            <input type="hidden" name="recordId" value={record.id} />
+            <input type="hidden" name="orderGid" value={orderGid || ""} />
+            <Button
+              size="slim"
+              tone="critical"
+              variant="plain"
+              loading={isDeleting}
+              submit
+            >
+              Delete
+            </Button>
+          </fetcher.Form>
+        </InlineStack>
+        <DataTable
+          columnContentTypes={["text", "text"]}
+          headings={["Field", "Value"]}
+          rows={rows}
+          increasedTableDensity
+        />
+      </BlockStack>
+    </Card>
   );
 }
 
-function SoftrResultsSection({ results, query }) {
+function SoftrResultsSection({ results, query, orderGid }) {
   const [openTables, setOpenTables] = useState({});
 
   function toggleTable(tableId) {
@@ -766,6 +829,7 @@ function SoftrResultsSection({ results, query }) {
                       key={record.id}
                       record={record}
                       tableId={group.tableId}
+                      orderGid={orderGid}
                     />
                   ))}
                 </BlockStack>
@@ -785,7 +849,8 @@ export default function OrderSearch() {
   const navigation = useNavigation();
   const shopify = useAppBridge();
   const [searchParams, setSearchParams] = useSearchParams();
-  const workflowFetcher = useFetcher();
+  const [workflowData, setWorkflowData] = useState(null);
+  const [workflowLoading, setWorkflowLoading] = useState(false);
 
   const isNavigating = navigation.state === "loading";
   const [searchInput, setSearchInput] = useState(query || "");
@@ -811,7 +876,7 @@ export default function OrderSearch() {
   }, [orders]);
 
   // Fetch execution status for both URLs when an order is selected
-  useEffect(() => {
+  const fetchWorkflowData = useCallback(() => {
     if (!selected) return;
 
     const workflowUrl = selected.n8nWorkflowUrl?.value || "";
@@ -823,8 +888,17 @@ export default function OrderSearch() {
     if (workflowUrl) params.set("workflowUrl", workflowUrl);
     if (finisherUrl) params.set("finisherUrl", finisherUrl);
 
-    workflowFetcher.load(`/app/order-workflow-detail?${params.toString()}`);
+    setWorkflowLoading(true);
+    fetch(`/app/order-workflow-detail?${params.toString()}`)
+      .then((res) => res.json())
+      .then(setWorkflowData)
+      .catch((e) => console.error("[workflow-fetch]", e))
+      .finally(() => setWorkflowLoading(false));
   }, [selected?.id]);
+
+  useEffect(() => {
+    fetchWorkflowData();
+  }, [fetchWorkflowData]);
 
   const debounceRef = useRef(null);
 
@@ -874,6 +948,27 @@ export default function OrderSearch() {
     [searchParams, setSearchParams],
   );
 
+  const resendFetcher = useFetcher();
+
+  const handleResendOrder = useCallback(() => {
+    if (!selected) return;
+    resendFetcher.submit(
+      { orderGid: selected.id },
+      { method: "POST", action: "/app/resend-order" },
+    );
+  }, [selected, resendFetcher]);
+
+  // Toast on resend completion
+  useEffect(() => {
+    if (resendFetcher.state === "idle" && resendFetcher.data) {
+      if (resendFetcher.data.ok) {
+        shopify.toast.show("Order resent to webhook");
+      } else {
+        shopify.toast.show("Resend failed: " + (resendFetcher.data.error || "Unknown error"), { isError: true });
+      }
+    }
+  }, [resendFetcher.state, resendFetcher.data]);
+
   const retryFetcher = useFetcher();
   const [retryingType, setRetryingType] = useState(null);
 
@@ -887,7 +982,7 @@ export default function OrderSearch() {
 
       setRetryingType(type);
       retryFetcher.submit(
-        { url },
+        { url, orderGid: selected.id },
         { method: "POST", action: "/app/order-workflow-detail" },
       );
     },
@@ -899,27 +994,24 @@ export default function OrderSearch() {
     if (retryFetcher.state === "idle" && retryFetcher.data?.ok && retryingType) {
       setRetryingType(null);
       // Refresh workflow data after a short delay to let n8n start the execution
-      setTimeout(() => {
-        if (!selected) return;
-        const workflowUrl = selected.n8nWorkflowUrl?.value || "";
-        const finisherUrl = selected.n8nOrderFinisherUrl?.value || "";
-        const params = new URLSearchParams();
-        if (workflowUrl) params.set("workflowUrl", workflowUrl);
-        if (finisherUrl) params.set("finisherUrl", finisherUrl);
-        workflowFetcher.load(`/app/order-workflow-detail?${params.toString()}`);
-      }, 2000);
+      setTimeout(fetchWorkflowData, 2000);
     }
     if (retryFetcher.state === "idle" && retryFetcher.data && !retryFetcher.data.ok) {
       setRetryingType(null);
     }
   }, [retryFetcher.state, retryFetcher.data]);
 
-  const workflowLoading = workflowFetcher.state === "loading";
-  const workflowData = workflowFetcher.data ?? null;
-
   // Get the data for the currently open modal
   const modalData = modalType === "workflow" ? workflowData?.workflow : workflowData?.finisher;
   const modalTitle = modalType === "workflow" ? "Workflow" : "Order Finisher";
+
+  const changeLogEntries = selected
+    ? JSON.parse(selected.changeLog?.value || "[]")
+    : [];
+
+  const handleOpenChangelog = useCallback(() => {
+    shopify.modal.show("changelog-modal");
+  }, [shopify]);
 
   return (
     <Page fullWidth>
@@ -951,6 +1043,27 @@ export default function OrderSearch() {
         </Box>
         <TitleBar title={modalTitle}>
           <button onClick={() => shopify.modal.hide("workflow-modal")}>Close</button>
+        </TitleBar>
+      </Modal>
+
+      <Modal id="changelog-modal" variant="large">
+        <Box padding="400">
+          {changeLogEntries.length === 0 ? (
+            <Text variant="bodySm" tone="subdued">No changes recorded yet.</Text>
+          ) : (
+            <DataTable
+              columnContentTypes={["text", "text", "text"]}
+              headings={["Date", "Action", "Details"]}
+              rows={[...changeLogEntries].reverse().map((entry) => [
+                formatDate(entry.timestamp),
+                formatChangeLogAction(entry.action),
+                formatChangeLogDetails(entry),
+              ])}
+            />
+          )}
+        </Box>
+        <TitleBar title="Change Log">
+          <button onClick={() => shopify.modal.hide("changelog-modal")}>Close</button>
         </TitleBar>
       </Modal>
 
@@ -1015,7 +1128,7 @@ export default function OrderSearch() {
                   <p>No orders matched "{query}". Try a different search term.</p>
                 </EmptyState>
               </Card>
-              <SoftrResultsSection results={softrResults} query={query} />
+              <SoftrResultsSection results={softrResults} query={query} orderGid={selected?.id} />
             </BlockStack>
           ) : (
             <BlockStack gap="400">
@@ -1044,8 +1157,11 @@ export default function OrderSearch() {
                       onOpenModal={handleOpenModal}
                       onRetry={handleRetry}
                       retryingType={retryingType}
+                      onOpenChangelog={handleOpenChangelog}
+                      onResendOrder={handleResendOrder}
+                      isResending={resendFetcher.state !== "idle"}
                     />
-                    <SoftrResultsSection results={softrResults} query={query} />
+                    <SoftrResultsSection results={softrResults} query={query} orderGid={selected?.id} />
                   </BlockStack>
                 </div>
               </div>

@@ -1,11 +1,9 @@
-api_version = "2025-04"
-
 [[extensions]]
 name = "t:name"
 handle = "order-workflow-action"
-type = "ui_extension"
+type = "admin_link"
 uid = "eb85409f-806e-92bc-d22d-94d233f5fe411c83c1bc"
 
 [[extensions.targeting]]
-module = "./src/ActionExtension.jsx"
-target = "admin.order-details.action.render"
+target = "admin.order-details.action.link"
+url = "/app"

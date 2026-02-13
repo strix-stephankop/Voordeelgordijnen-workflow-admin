@@ -7,14 +7,17 @@ import {
   deleteSoftrRecord,
   updateSoftrRecord,
 } from "../softr.server";
+import { appendChangeLog } from "../changelog.server";
 
 export const action = async ({ request }) => {
-  await authenticate.admin(request);
+  const { admin } = await authenticate.admin(request);
 
   const formData = await request.formData();
   const intent = formData.get("_action");
   const tableId = formData.get("tableId");
   const recordId = formData.get("recordId");
+  const orderGid = formData.get("orderGid") || "";
+  console.log("[softr-search] action:", intent, "orderGid:", JSON.stringify(orderGid));
 
   if (!tableId || !recordId) {
     return json({ ok: false, error: "Missing tableId or recordId" }, { status: 400 });
@@ -22,12 +25,24 @@ export const action = async ({ request }) => {
 
   if (intent === "update") {
     const fieldId = formData.get("fieldId");
+    const fieldName = formData.get("fieldName") || fieldId;
     const value = formData.get("value");
+    const oldValue = formData.get("oldValue") || "";
     if (!fieldId) {
       return json({ ok: false, error: "Missing fieldId" }, { status: 400 });
     }
     try {
       await updateSoftrRecord(tableId, recordId, { [fieldId]: value });
+      if (orderGid) {
+        await appendChangeLog(admin, orderGid, {
+          action: "softr_field_update",
+          table: tableId,
+          recordId,
+          field: fieldName,
+          oldValue,
+          newValue: value,
+        });
+      }
       return json({ ok: true });
     } catch (e) {
       console.error("Softr update failed:", e.message);
@@ -37,6 +52,13 @@ export const action = async ({ request }) => {
 
   try {
     await deleteSoftrRecord(tableId, recordId);
+    if (orderGid) {
+      await appendChangeLog(admin, orderGid, {
+        action: "softr_record_delete",
+        table: tableId,
+        recordId,
+      });
+    }
     return json({ ok: true });
   } catch (e) {
     console.error("Softr delete failed:", e.message);
