@@ -513,15 +513,6 @@ export default function Executions() {
     setSelectedExecution(null);
   }, [filters.status, filters.workflowId, cursorParam]);
 
-  // Auto-refresh every 5 seconds, only when page is visible
-  useEffect(() => {
-    const interval = setInterval(() => {
-      if (revalidator.state === "idle" && document.visibilityState === "visible") {
-        revalidator.revalidate();
-      }
-    }, 5000);
-    return () => clearInterval(interval);
-  }, [revalidator]);
 
   const workflowOptions = [
     { label: "All workflows", value: "" },

@@ -23,7 +23,10 @@ export default function App() {
           Orders
         </Link>
         <Link to="/app/executions">Executions</Link>
+        <Link to="/app/orders">Supabase Orders</Link>
         <Link to="/app/softr">Softr</Link>
+        <Link to="/app/kleurstalen">Kleurstalen</Link>
+        <Link to="/app/nedistri">NE Distri</Link>
       </NavMenu>
       <Outlet />
     </AppProvider>
