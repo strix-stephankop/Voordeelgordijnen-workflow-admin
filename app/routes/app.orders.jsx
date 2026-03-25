@@ -156,15 +156,73 @@ function statusTone(status) {
 
 /* ── Order Line ── */
 
+function toDisplayValues(line) {
+  const isOG = line.productGroupCode === "OG";
+  const plooiFactor = line.plooiFactor || 0;
+  const heightMm = line.finishedHeightInMm || 0;
+
+  let knipmaatLeft, knipmaatRight;
+  if (isOG) {
+    const totalPanels = (line.panelsLeft || 0) + (line.panelsRight || 0);
+    const knipmaat = totalPanels > 0 ? ((heightMm + 250) * totalPanels) / 10 : 0;
+    const divRight = (line.panelDivision || "").toLowerCase().includes("right");
+    knipmaatLeft = divRight ? 0 : knipmaat;
+    knipmaatRight = divRight ? knipmaat : 0;
+  } else {
+    knipmaatLeft = plooiFactor
+      ? ((line.finishedWidthLeftInMm || 0) * plooiFactor) / 10
+      : (line.cutSizeLeftInMm || 0);
+    knipmaatRight = plooiFactor
+      ? ((line.finishedWidthRightInMm || 0) * plooiFactor) / 10
+      : (line.cutSizeRightInMm || 0);
+  }
+
+  return {
+    knipmaatLeft: knipmaatLeft || "",
+    knipmaatRight: knipmaatRight || "",
+    panelsLeft: line.panelsLeft ?? "",
+    panelsRight: line.panelsRight ?? "",
+  };
+}
+
+function reverseCalculateFields(values, line) {
+  const isOG = line.productGroupCode === "OG";
+  const plooiFactor = line.plooiFactor || 0;
+
+  const knipmaatLeftCm = values.knipmaatLeft === "" ? null : Number(values.knipmaatLeft);
+  const knipmaatRightCm = values.knipmaatRight === "" ? null : Number(values.knipmaatRight);
+  const pLeft = values.panelsLeft === "" ? null : Number(values.panelsLeft);
+  const pRight = values.panelsRight === "" ? null : Number(values.panelsRight);
+
+  let finWidthLeft, finWidthRight;
+  if (isOG) {
+    finWidthLeft = line.finishedWidthLeftInMm;
+    finWidthRight = line.finishedWidthRightInMm;
+  } else if (plooiFactor > 0) {
+    finWidthLeft = knipmaatLeftCm != null ? Math.round((knipmaatLeftCm * 10) / plooiFactor) : null;
+    finWidthRight = knipmaatRightCm != null ? Math.round((knipmaatRightCm * 10) / plooiFactor) : null;
+  } else {
+    finWidthLeft = line.finishedWidthLeftInMm;
+    finWidthRight = line.finishedWidthRightInMm;
+  }
+
+  return {
+    finishedWidthLeftInMm: finWidthLeft,
+    finishedWidthRightInMm: finWidthRight,
+    panelsLeft: pLeft,
+    panelsRight: pRight,
+    cutSizeLeftInMm: knipmaatLeftCm,
+    cutSizeRightInMm: knipmaatRightCm,
+  };
+}
+
 function OrderLine({ line }) {
   const fetcher = useFetcher();
   const [dirty, setDirty] = useState(false);
-  const [values, setValues] = useState({
-    finishedWidthLeftInMm: line.finishedWidthLeftInMm ?? "",
-    finishedWidthRightInMm: line.finishedWidthRightInMm ?? "",
-    panelsLeft: line.panelsLeft ?? "",
-    panelsRight: line.panelsRight ?? "",
-  });
+  const [values, setValues] = useState(() => toDisplayValues(line));
+
+  const isOG = line.productGroupCode === "OG";
+  const heightMm = line.finishedHeightInMm || 0;
 
   const isSaving = fetcher.state === "submitting";
   const saveError = fetcher.data?.ok === false ? fetcher.data.error : null;
@@ -172,26 +230,16 @@ function OrderLine({ line }) {
   // Sync from line prop on revalidation/realtime, but only when user isn't editing
   useEffect(() => {
     if (!dirty) {
-      setValues({
-        finishedWidthLeftInMm: line.finishedWidthLeftInMm ?? "",
-        finishedWidthRightInMm: line.finishedWidthRightInMm ?? "",
-        panelsLeft: line.panelsLeft ?? "",
-        panelsRight: line.panelsRight ?? "",
-      });
+      setValues(toDisplayValues(line));
     }
-  }, [line.finishedWidthLeftInMm, line.finishedWidthRightInMm, line.panelsLeft, line.panelsRight]);
+  }, [line.finishedWidthLeftInMm, line.finishedWidthRightInMm, line.panelsLeft, line.panelsRight, line.cutSizeLeftInMm, line.cutSizeRightInMm]);
 
   // After successful save, immediately reflect saved values from server response
   useEffect(() => {
     if (fetcher.data?.ok) {
       setDirty(false);
       if (fetcher.data.line) {
-        setValues({
-          finishedWidthLeftInMm: fetcher.data.line.finishedWidthLeftInMm ?? "",
-          finishedWidthRightInMm: fetcher.data.line.finishedWidthRightInMm ?? "",
-          panelsLeft: fetcher.data.line.panelsLeft ?? "",
-          panelsRight: fetcher.data.line.panelsRight ?? "",
-        });
+        setValues(toDisplayValues(fetcher.data.line));
       }
     }
   }, [fetcher.data]);
@@ -199,33 +247,59 @@ function OrderLine({ line }) {
   function handleChange(field) {
     return (val) => {
       setDirty(true);
-      setValues((prev) => ({ ...prev, [field]: val }));
+      setValues((prev) => {
+        const next = { ...prev, [field]: val };
+
+        // For OG: keep knipmaat and panels in sync
+        if (isOG && heightMm > 0) {
+          const perPanel = (heightMm + 250) / 10; // cm per panel
+
+          if (field === "knipmaatLeft" || field === "knipmaatRight") {
+            const knipmaatCm = Number(val) || 0;
+            const totalPanels = perPanel > 0 ? Math.round(knipmaatCm / perPanel) : 0;
+
+            const curLeft = Number(prev.panelsLeft) || 0;
+            const curRight = Number(prev.panelsRight) || 0;
+            const curTotal = curLeft + curRight;
+
+            if (curTotal > 0 && curLeft > 0 && curRight > 0) {
+              const ratio = curLeft / curTotal;
+              next.panelsLeft = Math.round(totalPanels * ratio);
+              next.panelsRight = totalPanels - Math.round(totalPanels * ratio);
+            } else if (curRight > 0 && curLeft === 0) {
+              next.panelsLeft = 0;
+              next.panelsRight = totalPanels;
+            } else {
+              next.panelsLeft = totalPanels;
+              next.panelsRight = 0;
+            }
+          } else if (field === "panelsLeft" || field === "panelsRight") {
+            const newLeft = field === "panelsLeft" ? (Number(val) || 0) : (Number(prev.panelsLeft) || 0);
+            const newRight = field === "panelsRight" ? (Number(val) || 0) : (Number(prev.panelsRight) || 0);
+            const knipmaat = (newLeft + newRight) * perPanel;
+
+            const divRight = (line.panelDivision || "").toLowerCase().includes("right");
+            next.knipmaatLeft = divRight ? 0 : knipmaat;
+            next.knipmaatRight = divRight ? knipmaat : 0;
+          }
+        }
+
+        return next;
+      });
     };
   }
 
   function handleSave() {
+    const fields = reverseCalculateFields(values, line);
     fetcher.submit(
-      {
-        lineId: line.id,
-        fields: {
-          finishedWidthLeftInMm: values.finishedWidthLeftInMm === "" ? null : Number(values.finishedWidthLeftInMm),
-          finishedWidthRightInMm: values.finishedWidthRightInMm === "" ? null : Number(values.finishedWidthRightInMm),
-          panelsLeft: values.panelsLeft === "" ? null : Number(values.panelsLeft),
-          panelsRight: values.panelsRight === "" ? null : Number(values.panelsRight),
-        },
-      },
+      { lineId: line.id, fields },
       { method: "POST", action: "/app/order-lines", encType: "application/json" },
     );
   }
 
   function handleCancel() {
     setDirty(false);
-    setValues({
-      finishedWidthLeftInMm: line.finishedWidthLeftInMm ?? "",
-      finishedWidthRightInMm: line.finishedWidthRightInMm ?? "",
-      panelsLeft: line.panelsLeft ?? "",
-      panelsRight: line.panelsRight ?? "",
-    });
+    setValues(toDisplayValues(line));
   }
 
   return (
@@ -249,17 +323,17 @@ function OrderLine({ line }) {
             <BlockStack gap="200">
               <InlineStack gap="300" wrap={false}>
                 <TextField
-                  label="Knipmaat links (mm)"
-                  value={String(values.finishedWidthLeftInMm)}
-                  onChange={handleChange("finishedWidthLeftInMm")}
+                  label="Knipmaat links (cm)"
+                  value={String(values.knipmaatLeft)}
+                  onChange={handleChange("knipmaatLeft")}
                   type="number"
                   autoComplete="off"
                   size="slim"
                 />
                 <TextField
-                  label="Knipmaat rechts (mm)"
-                  value={String(values.finishedWidthRightInMm)}
-                  onChange={handleChange("finishedWidthRightInMm")}
+                  label="Knipmaat rechts (cm)"
+                  value={String(values.knipmaatRight)}
+                  onChange={handleChange("knipmaatRight")}
                   type="number"
                   autoComplete="off"
                   size="slim"
