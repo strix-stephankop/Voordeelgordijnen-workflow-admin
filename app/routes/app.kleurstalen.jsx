@@ -1,6 +1,7 @@
 import { json } from "@remix-run/node";
 import { useLoaderData, useSearchParams, useNavigation } from "@remix-run/react";
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
+import { createClient } from "@supabase/supabase-js";
 import {
   Page,
   Card,
@@ -17,6 +18,7 @@ import {
   EmptyState,
   TextField,
   Icon,
+  ProgressBar,
 } from "@shopify/polaris";
 import { SearchIcon } from "@shopify/polaris-icons";
 import { authenticate } from "../shopify.server";
@@ -53,10 +55,32 @@ export const loader = async ({ request }) => {
 
   if (error) {
     console.error("Failed to fetch kleurstalen:", error.message);
-    return json({ items: [], count: 0, tab, limit, search, error: error.message });
+    return json({ items: [], count: 0, tab, limit, search, error: error.message, printUrls: [] });
   }
 
-  return json({ items: data ?? [], count, tab, limit, search, error: null });
+  // Fetch all pdf_urls + ids for "Ready for Print" items (used by local print-all)
+  let printItems = [];
+  if (tab !== "done") {
+    const { data: urlData } = await supabase
+      .from("Kleurstalen")
+      .select("id, pdf_url, orderNumber")
+      .eq("status", "Ready for Print")
+      .not("pdf_url", "is", null)
+      .order("orderNumber", { ascending: false });
+    printItems = (urlData || []).filter((r) => r.pdf_url);
+  }
+
+  return json({
+    items: data ?? [],
+    count,
+    tab,
+    limit,
+    search,
+    error: null,
+    printItems,
+    supabaseUrl: process.env.SUPABASE_URL,
+    supabaseKey: process.env.SUPABASE_ANON_KEY,
+  });
 };
 
 export const action = async ({ request }) => {
@@ -144,16 +168,85 @@ function KleurstaalCard({ item, activeTab, onPrint, onUpdate }) {
 }
 
 export default function Kleurstalen() {
-  const { items, count, tab, limit, search, error } = useLoaderData();
+  const { items: loaderItems, count: loaderCount, tab, limit, search, error, printItems, supabaseUrl, supabaseKey } = useLoaderData();
   const [searchParams, setSearchParams] = useSearchParams();
   const navigation = useNavigation();
   const isLoading = navigation.state === "loading";
   const [searchValue, setSearchValue] = useState(search || "");
   const [printingAll, setPrintingAll] = useState(false);
+  const [printProgress, setPrintProgress] = useState({ step: "", current: 0, total: 0 });
+  const [printMode, setPrintMode] = useState("n8n");
+  const [liveItems, setLiveItems] = useState(loaderItems);
+  const [liveCount, setLiveCount] = useState(loaderCount);
   const debounceRef = useRef(null);
+  const clientRef = useRef(null);
+
+  // Sync loader data into live state when loader refreshes
+  useEffect(() => {
+    setLiveItems(loaderItems);
+    setLiveCount(loaderCount);
+  }, [loaderItems, loaderCount]);
+
+  useEffect(() => {
+    const stored = localStorage.getItem("kleurstalen_print_mode");
+    if (stored) setPrintMode(stored);
+  }, []);
+
+  // Client-side Supabase for direct updates
+  if (!clientRef.current && supabaseUrl && supabaseKey) {
+    clientRef.current = createClient(supabaseUrl, supabaseKey);
+  }
+
+  // Realtime subscription for Kleurstalen table
+  useEffect(() => {
+    if (!supabaseUrl || !supabaseKey) return;
+
+    const client = createClient(supabaseUrl, supabaseKey, {
+      realtime: { params: { eventsPerSecond: 2 } },
+    });
+
+    const channel = client
+      .channel("realtime-kleurstalen")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "Kleurstalen" },
+        (payload) => {
+          const activeStatus = tab === "done" ? "Done" : "Ready for Print";
+
+          if (payload.eventType === "UPDATE") {
+            const updated = payload.new;
+            if (updated.status !== activeStatus) {
+              // Item moved away from current tab — remove it
+              setLiveItems((prev) => prev.filter((item) => item.id !== updated.id));
+              setLiveCount((prev) => Math.max(0, prev - 1));
+            } else {
+              // Item updated but still in current tab — update in place
+              setLiveItems((prev) =>
+                prev.map((item) => (item.id === updated.id ? { ...item, ...updated } : item)),
+              );
+            }
+          } else if (payload.eventType === "INSERT") {
+            const newItem = payload.new;
+            if (newItem.status === activeStatus) {
+              setLiveItems((prev) => [newItem, ...prev]);
+              setLiveCount((prev) => prev + 1);
+            }
+          } else if (payload.eventType === "DELETE") {
+            setLiveItems((prev) => prev.filter((item) => item.id !== payload.old.id));
+            setLiveCount((prev) => Math.max(0, prev - 1));
+          }
+        },
+      )
+      .subscribe();
+
+    return () => {
+      channel.unsubscribe();
+      client.removeAllChannels();
+    };
+  }, [supabaseUrl, supabaseKey, tab]);
 
   const activeTab = tab;
-  const hasMore = count > items.length;
+  const hasMore = liveCount > liveItems.length;
   const selectedTabIndex = activeTab === "done" ? 1 : 0;
 
   const tabs = [
@@ -195,43 +288,121 @@ export default function Kleurstalen() {
 
   const handlePrintAll = async () => {
     setPrintingAll(true);
+    setPrintProgress({ step: "start", current: 0, total: 0 });
     try {
-      const res = await fetch(
-        "https://voordeelgordijnen.n8n.sition.cloud/webhook/abbffa92-b0ab-409c-a0bd-c615224aad22",
-        { method: "POST" },
-      );
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      window.open(url, "_blank");
+      if (printMode === "local") {
+        console.log("Print items:", printItems);
+        if (!printItems?.length) {
+          console.error("No PDFs found");
+          return;
+        }
+
+        const total = printItems.length;
+
+        // Merge PDFs locally using pdf-lib
+        setPrintProgress({ step: "download", current: 0, total });
+        const { PDFDocument } = await import("pdf-lib");
+        const mergedPdf = await PDFDocument.create();
+
+        for (let i = 0; i < printItems.length; i++) {
+          setPrintProgress({ step: "download", current: i + 1, total });
+          try {
+            const pdfRes = await fetch(printItems[i].pdf_url);
+            const pdfBytes = await pdfRes.arrayBuffer();
+            const doc = await PDFDocument.load(pdfBytes);
+            const pages = await mergedPdf.copyPages(doc, doc.getPageIndices());
+            pages.forEach((page) => mergedPdf.addPage(page));
+          } catch (e) {
+            console.error("Failed to load PDF:", printItems[i].pdf_url, e);
+          }
+        }
+
+        setPrintProgress({ step: "merge", current: 0, total: 0 });
+        const mergedBytes = await mergedPdf.save();
+        const blob = new Blob([mergedBytes], { type: "application/pdf" });
+        const url = URL.createObjectURL(blob);
+        window.open(url, "_blank");
+
+        // Mark all printed items as Done via client-side Supabase (batched to avoid URL length limits)
+        const ids = printItems.map((item) => item.id);
+        if (clientRef.current) {
+          const BATCH_SIZE = 100;
+          const totalBatches = Math.ceil(ids.length / BATCH_SIZE);
+          for (let i = 0; i < ids.length; i += BATCH_SIZE) {
+            const batchNum = Math.floor(i / BATCH_SIZE) + 1;
+            setPrintProgress({ step: "status", current: batchNum, total: totalBatches });
+            const batch = ids.slice(i, i + BATCH_SIZE);
+            const { error: updateError } = await clientRef.current
+              .from("Kleurstalen")
+              .update({ status: "Done" })
+              .in("id", batch);
+            if (updateError) {
+              console.error(`Batch update failed (${i}-${i + batch.length}):`, updateError);
+            }
+          }
+        }
+      } else {
+        // N8N webhook mode
+        setPrintProgress({ step: "webhook", current: 0, total: 0 });
+        const res = await fetch(
+          "https://voordeelgordijnen.n8n.sition.cloud/webhook/abbffa92-b0ab-409c-a0bd-c615224aad22",
+          { method: "POST" },
+        );
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        window.open(url, "_blank");
+      }
     } catch (e) {
       console.error("Failed to fetch print PDF:", e);
     } finally {
       setPrintingAll(false);
+      setPrintProgress({ step: "", current: 0, total: 0 });
     }
   };
 
   const handleUpdate = async (item) => {
     const newStatus = activeTab === "ready" ? "Done" : "Ready for Print";
-    await fetch(window.location.pathname, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "updateStatus", id: item.id, status: newStatus }),
-    });
-    const params = { tab: activeTab, limit: String(limit) };
-    if (search) params.q = search;
-    setSearchParams(params);
+    if (clientRef.current) {
+      await clientRef.current
+        .from("Kleurstalen")
+        .update({ status: newStatus })
+        .eq("id", item.id);
+    }
   };
 
   const primaryAction = activeTab === "ready"
     ? { content: printingAll ? "PDF genereren..." : "Alles Printen", onAction: handlePrintAll, loading: printingAll, disabled: printingAll }
     : undefined;
 
-  const subtitle = `${count} ${activeTab === "ready" ? "nog niet geprint" : "afgerond"}`;
+  const subtitle = `${liveCount} ${activeTab === "ready" ? "nog niet geprint" : "afgerond"}`;
 
   return (
-    <Page title="KLEURSTALEN" subtitle={subtitle} primaryAction={primaryAction}>
+    <Page fullWidth title="KLEURSTALEN" subtitle={subtitle} primaryAction={primaryAction}>
       <BlockStack gap="400">
         <Tabs tabs={tabs} selected={selectedTabIndex} onSelect={handleTabChange} />
+
+        {printingAll && (
+          <Card>
+            <BlockStack gap="200">
+              <Text variant="bodySm" fontWeight="semibold">
+                {printProgress.step === "download" && `PDF's downloaden... (${printProgress.current}/${printProgress.total})`}
+                {printProgress.step === "merge" && "PDF's samenvoegen..."}
+                {printProgress.step === "status" && `Status bijwerken... (${printProgress.current}/${printProgress.total})`}
+                {printProgress.step === "webhook" && "Wachten op n8n webhook..."}
+                {printProgress.step === "start" && "Starten..."}
+              </Text>
+              <ProgressBar
+                progress={
+                  printProgress.total > 0
+                    ? Math.round((printProgress.current / printProgress.total) * 100)
+                    : 0
+                }
+                size="small"
+                tone="primary"
+              />
+            </BlockStack>
+          </Card>
+        )}
 
         <TextField
           placeholder="Zoek op ordernummer of klantnaam..."
@@ -251,7 +422,7 @@ export default function Kleurstalen() {
 
         <div style={{ opacity: isLoading ? 0.5 : 1, transition: "opacity 0.15s" }}>
           <BlockStack gap="400">
-            {items.map((item) => (
+            {liveItems.map((item) => (
               <KleurstaalCard
                 key={item.id}
                 item={item}
@@ -263,7 +434,7 @@ export default function Kleurstalen() {
           </BlockStack>
         </div>
 
-        {items.length === 0 && !error && (
+        {liveItems.length === 0 && !error && (
           <Card>
             <EmptyState
               heading="Geen kleurstalen gevonden"
@@ -277,7 +448,7 @@ export default function Kleurstalen() {
         {hasMore && (
           <InlineStack align="center">
             <Button onClick={loadMore} loading={isLoading}>
-              Meer laden ({items.length} van {count})
+              Meer laden ({liveItems.length} van {liveCount})
             </Button>
           </InlineStack>
         )}

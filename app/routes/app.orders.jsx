@@ -446,7 +446,7 @@ function OrderCard({ order, lines }) {
               >
                 <ActionList
                   items={[
-                    { content: "Bekijk details" },
+                    { content: "Bekijk details", onAction: () => window.open(`shopify:admin/orders?query=name:%23${orderId}`, '_top') },
                     { content: "Bewerk order" },
                     { content: "Verwijder", destructive: true },
                   ]}
@@ -579,8 +579,8 @@ export default function Orders() {
   }
 
   return (
-    <Page fullWidth title="Webatelier orders">
-      <TitleBar title="Webatelier orders" />
+    <Page fullWidth title="Kleurstalen">
+      <TitleBar title="Kleurstalen" />
       <BlockStack gap="400">
         {/* Top bar: search + status */}
         <InlineStack align="space-between" blockAlign="center">

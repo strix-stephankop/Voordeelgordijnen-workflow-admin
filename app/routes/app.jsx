@@ -22,11 +22,12 @@ export default function App() {
         <Link to="/app" rel="home">
           Orders
         </Link>
-        <Link to="/app/executions">Executions</Link>
-        <Link to="/app/orders">Supabase Orders</Link>
-        <Link to="/app/softr">Softr</Link>
+        <Link to="/app/orders">Webattelier</Link>
         <Link to="/app/kleurstalen">Kleurstalen</Link>
         <Link to="/app/nedistri">NE Distri</Link>
+        <Link to="/app/executions">Executions</Link>
+        <Link to="/app/softr">Softr</Link>
+        <Link to="/app/settings">Instellingen</Link>
       </NavMenu>
       <Outlet />
     </AppProvider>

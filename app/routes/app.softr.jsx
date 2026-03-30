@@ -70,6 +70,7 @@ export default function SoftrPage() {
 
   return (
     <Page
+      fullWidth
       title="Softr Database"
       primaryAction={{
         content: "Refresh",
