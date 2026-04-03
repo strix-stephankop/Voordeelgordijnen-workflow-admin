@@ -32,7 +32,8 @@ export async function queryLinesByOrderNumber(orderNumber) {
   const { data, error } = await supabase
     .from("Webattelier - lines")
     .select("*")
-    .eq("orderId", orderNumber);
+    .eq("orderId", orderNumber)
+    .order("customer_reference", { ascending: true });
 
   if (error) throw error;
   return data ?? [];
@@ -43,7 +44,8 @@ export async function queryLinesByOrderNumbers(orderNumbers) {
   const { data, error } = await supabase
     .from("Webattelier - lines")
     .select("*")
-    .in("orderId", orderNumbers);
+    .in("orderId", orderNumbers)
+    .order("customer_reference", { ascending: true });
 
   if (error) throw error;
 
@@ -61,6 +63,40 @@ export async function updateLine(lineId, fields) {
     .from("Webattelier - lines")
     .update(fields)
     .eq("id", lineId)
+    .select()
+    .single();
+
+  if (error) throw error;
+  return data;
+}
+
+export async function querySyncChecks({ from = 0, to = 49 } = {}) {
+  const { data, error, count } = await supabase
+    .from("sync_checks")
+    .select("*", { count: "exact" })
+    .order("created_at", { ascending: false })
+    .range(from, to);
+
+  if (error) throw error;
+  return { data: data ?? [], count };
+}
+
+export async function getSyncCheck(id) {
+  const { data, error } = await supabase
+    .from("sync_checks")
+    .select("*")
+    .eq("id", id)
+    .single();
+
+  if (error) throw error;
+  return data;
+}
+
+export async function updateSyncCheckReport(id, report) {
+  const { data, error } = await supabase
+    .from("sync_checks")
+    .update({ report })
+    .eq("id", id)
     .select()
     .single();
 

@@ -25,6 +25,7 @@ export default function App() {
         <Link to="/app/orders">Webattelier</Link>
         <Link to="/app/kleurstalen">Kleurstalen</Link>
         <Link to="/app/nedistri">NE Distri</Link>
+        <Link to="/app/sync-checks">Sync Checks</Link>
         <Link to="/app/executions">Executions</Link>
         <Link to="/app/softr">Softr</Link>
         <Link to="/app/settings">Instellingen</Link>

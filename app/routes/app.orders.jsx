@@ -30,7 +30,8 @@ import { queryTable, queryLinesByOrderNumbers, searchOrders } from "../supabase.
 const PAGE_SIZE = 50;
 
 export const loader = async ({ request }) => {
-  await authenticate.admin(request);
+  const { session } = await authenticate.admin(request);
+  const shop = session.shop;
 
   const url = new URL(request.url);
   const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10));
@@ -57,6 +58,7 @@ export const loader = async ({ request }) => {
       error: null,
       sortBy,
       sortDir,
+      shop,
       supabaseUrl: process.env.SUPABASE_URL,
       supabaseKey: process.env.SUPABASE_ANON_KEY,
     });
@@ -143,6 +145,18 @@ function mmToCm(mm) {
   const num = Number(mm);
   if (isNaN(num)) return String(mm);
   return `${(num / 10).toFixed(1)}cm`;
+}
+
+const DIVISION_NL = {
+  "1 part left": "1 deel links",
+  "1 part right": "1 deel rechts",
+  "2 equal parts": "2 gelijke delen",
+  "2 unequal parts": "2 ongelijke delen",
+};
+
+function translateDivision(value) {
+  if (!value) return value;
+  return DIVISION_NL[value.toLowerCase()] || value;
 }
 
 function statusTone(status) {
@@ -312,7 +326,7 @@ function OrderLine({ line }) {
               <li><Text variant="bodySm" as="span">Hoeveelheid: {line.quantity ?? "—"}</Text></li>
               <li><Text variant="bodySm" as="span">{line.productTitle ?? "—"}</Text></li>
               {line.panelDivision && (
-                <li><Text variant="bodySm" as="span">{line.panelDivision}</Text></li>
+                <li><Text variant="bodySm" as="span">{translateDivision(line.panelDivision)}</Text></li>
               )}
             </ul>
           </BlockStack>
@@ -382,7 +396,7 @@ function OrderLine({ line }) {
 
 /* ── Order Card ── */
 
-function OrderCard({ order, lines }) {
+function OrderCard({ order, lines, shop }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [printing, setPrinting] = useState(false);
 
@@ -446,7 +460,7 @@ function OrderCard({ order, lines }) {
               >
                 <ActionList
                   items={[
-                    { content: "Bekijk details", onAction: () => window.open(`shopify:admin/orders?query=name:%23${orderId}`, '_top') },
+                    { content: "Bekijk details", onAction: () => window.open(`https://${shop}/admin/orders?query=name%3A%23${orderId}`, '_blank') },
                     { content: "Bewerk order" },
                     { content: "Verwijder", destructive: true },
                   ]}
@@ -485,7 +499,7 @@ function OrderCard({ order, lines }) {
 /* ── Main Page ── */
 
 export default function Orders() {
-  const { orders, linesByOrder, total, page, search, error, sortBy, sortDir, supabaseUrl, supabaseKey } =
+  const { orders, linesByOrder, total, page, search, error, sortBy, sortDir, shop, supabaseUrl, supabaseKey } =
     useLoaderData();
   const navigation = useNavigation();
   const revalidator = useRevalidator();
@@ -683,7 +697,7 @@ export default function Orders() {
               {filteredOrders.map((order, i) => {
                 const orderId = order.id != null ? String(order.id) : null;
                 const lines = orderId ? linesByOrder[orderId] || [] : [];
-                return <OrderCard key={orderId ?? i} order={order} lines={lines} />;
+                return <OrderCard key={orderId ?? i} order={order} lines={lines} shop={shop} />;
               })}
             </BlockStack>
           )}
