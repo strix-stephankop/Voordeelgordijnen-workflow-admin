@@ -159,6 +159,54 @@ function translateDivision(value) {
   return DIVISION_NL[value.toLowerCase()] || value;
 }
 
+function parseLineDetails(line) {
+  let details = [];
+  try {
+    const json = typeof line.orderJson === "string" ? JSON.parse(line.orderJson) : line.orderJson;
+    if (json?.orderLineDetails) details = json.orderLineDetails;
+  } catch {}
+
+  const codes = details.map((d) => d.finishCode || "");
+
+  // Hanging system
+  const hasRing = codes.some((c) => c.includes("RING") || c.includes("ARTRNG"));
+  const hangingSystem = hasRing ? "Ringensysteem" : "Railsysteem";
+
+  // Plooi type
+  let plooiName = "Geen plooi";
+  if (codes.some((c) => c.includes("BEVWAVE"))) plooiName = "Waveplooi";
+  else if (codes.some((c) => c.includes("AFWPPL3"))) plooiName = "Driedubbele plooi";
+  else if (codes.some((c) => c.includes("AFWPPL2"))) plooiName = "Dubbele plooi";
+  else if (codes.some((c) => c.includes("AFWPPL1"))) plooiName = "Enkele plooi";
+  else if (codes.some((c) => c.includes("BEVRAIL"))) plooiName = "Enkele plooi";
+  else if (codes.some((c) => c.includes("BEVRING"))) plooiName = "Enkele plooi";
+
+  // Ring type
+  const ringCode = details.find((d) => d.productCode?.includes("ARTRNG"))?.productCode || "";
+  const RING_NAMES = {
+    "ARTRNG_CH25": "25mm chroom",
+    "ARTRNG_CH40": "40mm chroom",
+    "ARTRNG_ZW25": "25mm zwart",
+    "ARTRNG_ZW40": "40mm zwart",
+    "ARTRNG_MS25": "25mm messing",
+    "ARTRNG_MS40": "40mm messing",
+    "ARTRNG_OZ25": "25mm zilver",
+    "ARTRNG_OZ40": "40mm zilver",
+  };
+  const ringName = RING_NAMES[ringCode] || "Geen ringen";
+
+  // Lining
+  const liningCode = line.liningFabricCode;
+  const lining = liningCode && liningCode.trim() ? liningCode : "Geen Voeringsstof";
+
+  // Dimensions
+  const widthMm = (line.finishedWidthLeftInMm || 0) + (line.finishedWidthRightInMm || 0);
+  const heightMm = line.finishedHeightInMm || 0;
+  const dimensions = `${(widthMm / 10).toFixed(1).replace(/\.0$/, "")}cm x ${(heightMm / 10).toFixed(1).replace(/\.0$/, "")}cm`;
+
+  return { hangingSystem, plooiName, ringName, lining, dimensions };
+}
+
 function statusTone(status) {
   if (!status) return undefined;
   const s = String(status).toLowerCase();
@@ -316,6 +364,8 @@ function OrderLine({ line }) {
     setValues(toDisplayValues(line));
   }
 
+  const { hangingSystem, plooiName, ringName, lining, dimensions } = parseLineDetails(line);
+
   return (
     <Box paddingBlockStart="300" paddingBlockEnd="300">
       <InlineStack gap="800" wrap={false}>
@@ -325,9 +375,14 @@ function OrderLine({ line }) {
             <ul style={{ margin: 0, paddingLeft: "1.2rem", listStyle: "disc" }}>
               <li><Text variant="bodySm" as="span">Hoeveelheid: {line.quantity ?? "—"}</Text></li>
               <li><Text variant="bodySm" as="span">{line.productTitle ?? "—"}</Text></li>
+              <li><Text variant="bodySm" as="span">{dimensions}</Text></li>
               {line.panelDivision && (
                 <li><Text variant="bodySm" as="span">{translateDivision(line.panelDivision)}</Text></li>
               )}
+              <li><Text variant="bodySm" as="span">{hangingSystem}</Text></li>
+              <li><Text variant="bodySm" as="span">{plooiName}</Text></li>
+              <li><Text variant="bodySm" as="span">{ringName}</Text></li>
+              <li><Text variant="bodySm" as="span">{lining}</Text></li>
             </ul>
           </BlockStack>
         </Box>
