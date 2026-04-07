@@ -73,3 +73,8 @@ model ExecutionOrder {
 
   @@index([orderNumber])
 }
+
+model Setting {
+  key   String @id
+  value String
+}

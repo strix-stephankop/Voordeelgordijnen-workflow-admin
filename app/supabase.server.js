@@ -150,15 +150,33 @@ async function rebuildCustomerJson(orderId) {
     .eq("orderId", orderId);
 }
 
-export async function querySyncChecks({ from = 0, to = 49 } = {}) {
-  const { data, error, count } = await supabase
+export async function querySyncChecks({ from = 0, to = 49, date = "" } = {}) {
+  let query = supabase
     .from("sync_checks")
     .select("*", { count: "exact" })
-    .order("created_at", { ascending: false })
-    .range(from, to);
+    .order("created_at", { ascending: false });
 
+  if (date) {
+    query = query.gte("created_at", `${date}T00:00:00`).lte("created_at", `${date}T23:59:59`);
+  }
+
+  query = query.range(from, to);
+
+  const { data, error, count } = await query;
   if (error) throw error;
   return { data: data ?? [], count };
+}
+
+export async function queryAllSyncChecksByDate(date) {
+  const { data, error } = await supabase
+    .from("sync_checks")
+    .select("*")
+    .gte("created_at", `${date}T00:00:00`)
+    .lte("created_at", `${date}T23:59:59`)
+    .order("created_at", { ascending: false });
+
+  if (error) throw error;
+  return data ?? [];
 }
 
 export async function getSyncCheck(id) {

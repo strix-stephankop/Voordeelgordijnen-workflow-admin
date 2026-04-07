@@ -1,7 +1,6 @@
 import { useLoaderData, useSearchParams, useRevalidator, useFetcher } from "@remix-run/react";
 import { json } from "@remix-run/node";
-import { useState, useEffect, useRef, useCallback } from "react";
-import { createClient } from "@supabase/supabase-js";
+import { useState, useEffect } from "react";
 import {
   Page,
   Card,
@@ -18,54 +17,12 @@ import {
   Collapsible,
   Divider,
   Icon,
-  Modal,
   List,
 } from "@shopify/polaris";
 import { ChevronDownIcon, ChevronUpIcon, InfoIcon, ExportIcon } from "@shopify/polaris-icons";
-import { TitleBar } from "@shopify/app-bridge-react";
+import { TitleBar, Modal, useAppBridge } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
 import { querySyncChecks, getSyncCheck, updateSyncCheckReport } from "../supabase.server";
-
-/* ── Realtime ── */
-
-function useSupabaseRealtime(supabaseUrl, supabaseKey, tables, onEvent) {
-  const [status, setStatus] = useState("connecting");
-  const onEventRef = useRef(onEvent);
-  onEventRef.current = onEvent;
-
-  useEffect(() => {
-    if (!supabaseUrl || !supabaseKey) {
-      setStatus("error");
-      return;
-    }
-
-    const client = createClient(supabaseUrl, supabaseKey, {
-      realtime: { params: { eventsPerSecond: 2 } },
-    });
-
-    let channel = client.channel("realtime-sync-checks");
-    for (const table of tables) {
-      channel = channel.on(
-        "postgres_changes",
-        { event: "*", schema: "public", table },
-        (payload) => onEventRef.current(payload),
-      );
-    }
-
-    channel.subscribe((state) => {
-      if (state === "SUBSCRIBED") setStatus("connected");
-      else if (state === "CLOSED") setStatus("disconnected");
-      else if (state === "CHANNEL_ERROR") setStatus("error");
-    });
-
-    return () => {
-      channel.unsubscribe();
-      client.removeAllChannels();
-    };
-  }, [supabaseUrl, supabaseKey, tables.join(",")]);
-
-  return status;
-}
 
 /* ── Loader / Action ── */
 
@@ -77,22 +34,19 @@ export const loader = async ({ request }) => {
 
   const url = new URL(request.url);
   const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10));
+  const date = url.searchParams.get("date") || "";
   const from = (page - 1) * PAGE_SIZE;
   const to = from + PAGE_SIZE - 1;
 
   try {
-    const { data, count } = await querySyncChecks({ from, to });
+    const { data, count } = await querySyncChecks({ from, to, date });
     return json({
-      checks: data, total: count, page, error: null, shop,
-      supabaseUrl: process.env.SUPABASE_URL,
-      supabaseKey: process.env.SUPABASE_ANON_KEY,
+      checks: data, total: count, page, date, error: null, shop,
     });
   } catch (e) {
     console.error("Failed to load sync checks:", e.message);
     return json({
-      checks: [], total: 0, page, error: e.message, shop,
-      supabaseUrl: process.env.SUPABASE_URL,
-      supabaseKey: process.env.SUPABASE_ANON_KEY,
+      checks: [], total: 0, page, date, error: e.message, shop,
     });
   }
 };
@@ -564,136 +518,214 @@ function SyncCheckCard({ check, shop }) {
   );
 }
 
-/* ── Info modal ── */
-
-function SyncCheckInfoModal({ open, onClose }) {
-  return (
-    <Modal open={open} onClose={onClose} title="Hoe werkt de Sync Check?">
-      <Modal.Section>
-        <BlockStack gap="400">
-          <Text variant="headingSm" as="h3">Overzicht</Text>
-          <Text as="p">
-            De Sync Check is een geautomatiseerde workflow (n8n) die <strong>elk uur</strong> draait.
-            Het doel is om te controleren of nieuwe Shopify-orders correct zijn verwerkt door alle
-            gekoppelde systemen. Elke controle kijkt naar orders van de <strong>afgelopen 2 uur</strong>.
-          </Text>
-
-          <Text variant="headingSm" as="h3">Stap 1: Orders ophalen uit Shopify</Text>
-          <Text as="p">
-            Alle orders die in de afgelopen 2 uur zijn aangemaakt worden opgehaald via de Shopify
-            GraphQL API, inclusief tags, line items en productie-bestemming (metafield).
-          </Text>
-
-          <Text variant="headingSm" as="h3">Stap 2: Orders categoriseren</Text>
-          <Text as="p">
-            Elke order wordt ingedeeld op basis van tags en bestemming:
-          </Text>
-          <List type="bullet">
-            <List.Item>
-              <strong>Geen "Completed" tag</strong> — Orders ouder dan 30 minuten die nog geen
-              "Completed" tag hebben. Dit betekent dat de order nog niet door de verwerkingsflow is gegaan.
-            </List.Item>
-            <List.Item>
-              <strong>Kleurstalen (KL)</strong> — Orders met de tag "kleurstaal". Deze moeten een
-              bijbehorend record hebben in de Kleurstalen tabel in Supabase.
-            </List.Item>
-            <List.Item>
-              <strong>NE-Distriservice (NE)</strong> — Orders met de tag "ne-distriservice". Deze
-              moeten een bijbehorend record hebben in de nedistri tabel in Supabase.
-            </List.Item>
-            <List.Item>
-              <strong>Webattelier (WA)</strong> — Orders met productie-bestemming "WA" (geen
-              losse stof). Deze moeten een bijbehorend record hebben in de Webattelier tabel in Supabase.
-            </List.Item>
-            <List.Item>
-              <strong>Overig (GH, VDG, DEC, HKL)</strong> — Orders naar andere bestemmingen.
-              Hier is geen Supabase-check voor nodig.
-            </List.Item>
-          </List>
-          <Text as="p" tone="subdued">
-            Orders met de tag "vooraf betalen per factuur" worden overgeslagen omdat deze wachten op
-            handmatige factuurbetaling.
-          </Text>
-
-          <Text variant="headingSm" as="h3">Stap 3: Supabase-records controleren</Text>
-          <Text as="p">
-            Voor elke categorie (KL, NE, WA) worden de bijbehorende Supabase-tabellen opgehaald.
-            Vervolgens wordt gecontroleerd of elk order een bijbehorend record heeft. Ontbrekende
-            records worden als probleem gerapporteerd.
-          </Text>
-
-          <Text variant="headingSm" as="h3">Stap 4: Rapport opslaan</Text>
-          <Text as="p">
-            Het volledige rapport wordt opgeslagen in de sync_checks tabel in Supabase. Als er
-            problemen zijn gevonden, wordt er optioneel een Slack-melding verstuurd.
-          </Text>
-
-          <Divider />
-
-          <Text variant="headingSm" as="h3">Wat je ziet op deze pagina</Text>
-          <Text as="p">
-            Elke kaart is één sync check (één uur). Je ziet:
-          </Text>
-          <List type="bullet">
-            <List.Item>
-              <strong>Datum en tijd</strong> — Wanneer de controle is uitgevoerd.
-            </List.Item>
-            <List.Item>
-              <strong>Status badge</strong> — "Geen problemen" (groen), aantal open issues (rood),
-              of "Alles afgevinkt" (groen) als alles is opgelost.
-            </List.Item>
-            <List.Item>
-              <strong>Aantal orders</strong> — Hoeveel orders er in totaal zijn gecontroleerd.
-            </List.Item>
-          </List>
-          <Text as="p">
-            Klik op een kaart om de details te zien. Issues zijn onderverdeeld in drie groepen:
-          </Text>
-          <List type="bullet">
-            <List.Item>
-              <strong>Missende Completed tag</strong> (oranje) — De order is niet door de
-              verwerkingsflow gegaan.
-            </List.Item>
-            <List.Item>
-              <strong>Missende Supabase records</strong> (rood) — De order is wel verwerkt
-              (heeft "Completed" tag) maar het bijbehorende record ontbreekt in Supabase.
-            </List.Item>
-            <List.Item>
-              <strong>Mogelijke WA problemen</strong> (geel) — Webattelier-orders die mogelijk
-              niet correct zijn gesynchroniseerd.
-            </List.Item>
-          </List>
-          <Text as="p">
-            Elk issue heeft een checkbox waarmee je het als opgelost kunt markeren. De ordernummers
-            zijn klikbaar en linken direct naar de order in Shopify Admin. De pagina wordt
-            automatisch bijgewerkt via een realtime verbinding met Supabase.
-          </Text>
-        </BlockStack>
-      </Modal.Section>
-    </Modal>
-  );
-}
+/* ── Info modal (rendered inside Page) ── */
 
 /* ── Page ── */
 
+async function exportAllSyncChecksPdf(checks, dateLabel) {
+  const { PDFDocument, StandardFonts, rgb } = await import("pdf-lib");
+
+  const pdf = await PDFDocument.create();
+  const font = await pdf.embedFont(StandardFonts.Helvetica);
+  const fontBold = await pdf.embedFont(StandardFonts.HelveticaBold);
+
+  function safe(str) {
+    return String(str).replace(/[^\x20-\x7E\xA0-\xFF]/g, "");
+  }
+
+  const W = 595;
+  const H = 842;
+  const margin = 48;
+  const contentW = W - margin * 2;
+  let page = pdf.addPage([W, H]);
+  let y;
+
+  const c = {
+    primary: rgb(192 / 255, 43 / 255, 43 / 255),
+    primaryDark: rgb(150 / 255, 30 / 255, 30 / 255),
+    dark: rgb(20 / 255, 20 / 255, 20 / 255),
+    mid: rgb(84 / 255, 84 / 255, 84 / 255),
+    light: rgb(140 / 255, 140 / 255, 140 / 255),
+    line: rgb(0.85, 0.85, 0.88),
+    bg: rgb(0.965, 0.965, 0.97),
+    red: rgb(192 / 255, 43 / 255, 43 / 255),
+    redBg: rgb(1, 0.94, 0.93),
+    green: rgb(52 / 255, 125 / 255, 84 / 255),
+    greenBg: rgb(0.92, 0.97, 0.92),
+    orange: rgb(252 / 255, 162 / 255, 26 / 255),
+    orangeBg: rgb(1, 0.96, 0.91),
+    white: rgb(1, 1, 1),
+  };
+
+  function newPage() {
+    page = pdf.addPage([W, H]);
+    y = H - margin;
+  }
+
+  function ensureSpace(needed) {
+    if (y - needed < margin) newPage();
+  }
+
+  function draw(str, x, yPos, { size = 9.5, bold = false, color = c.dark, maxWidth } = {}) {
+    const f = bold ? fontBold : font;
+    let t = safe(str);
+    if (maxWidth) {
+      while (f.widthOfTextAtSize(t, size) > maxWidth && t.length > 3) {
+        t = t.slice(0, -4) + "...";
+      }
+    }
+    page.drawText(t, { x, y: yPos, size, font: f, color });
+  }
+
+  function drawRect(x, yPos, w, h, color) {
+    page.drawRectangle({ x, y: yPos, width: w, height: h, color });
+  }
+
+  function pill(label, px, py, { bg, fg, size = 7.5 } = {}) {
+    const tw = fontBold.widthOfTextAtSize(safe(label), size);
+    const pw = tw + 14;
+    const ph = size + 10;
+    drawRect(px, py - 3, pw, ph, bg);
+    draw(label, px + 7, py + 1, { size, bold: true, color: fg });
+    return pw;
+  }
+
+  // Header
+  const headerH = 52;
+  drawRect(0, H - headerH, W, headerH, c.primary);
+  draw("VOORDEEL", margin + 6, H - 22, { size: 10, bold: true, color: c.white });
+  draw("GORDIJNEN", margin + 6, H - 34, { size: 10, bold: true, color: c.white });
+  draw(`Sync Checks - ${safe(dateLabel)}`, margin + 80, H - 30, { size: 16, bold: true, color: c.white });
+  y = H - headerH - 20;
+
+  // Deduplicate issues across all checks — keep the latest status per order+category
+  const issueMap = new Map(); // key: "orderName|category" -> item
+  for (const check of checks) {
+    const report = typeof check.report === "string" ? JSON.parse(check.report) : (check.report || {});
+    for (const f of (report.failures || [])) {
+      const key = `${f.orderName}|${f.category || "unknown"}`;
+      const existing = issueMap.get(key);
+      if (!existing || f.resolved) issueMap.set(key, { ...f, section: f.category === "no_tag" ? "Tag" : "Supabase" });
+    }
+    for (const f of (report.possibleWaIssues || [])) {
+      const key = `${f.orderName}|wa`;
+      const existing = issueMap.get(key);
+      if (!existing || f.resolved) issueMap.set(key, { ...f, section: "WA" });
+    }
+  }
+
+  const dedupedItems = [...issueMap.values()];
+  const totalIssues = dedupedItems.length;
+  const totalUnresolved = dedupedItems.filter((f) => !f.resolved).length;
+  const totalResolved = totalIssues - totalUnresolved;
+
+  const statsH = 56;
+  drawRect(margin, y - statsH, contentW, statsH, c.bg);
+  const statItems = [
+    { label: "Checks", value: String(checks.length), color: c.dark },
+    { label: "Unieke issues", value: String(totalIssues), color: c.dark },
+    { label: "Open", value: String(totalUnresolved), color: totalUnresolved > 0 ? c.primary : c.dark },
+    { label: "Afgevinkt", value: String(totalResolved), color: totalResolved > 0 ? c.green : c.dark },
+  ];
+  const colW = contentW / statItems.length;
+  statItems.forEach((s, i) => {
+    const sx = margin + i * colW + 12;
+    draw(s.value, sx, y - 22, { size: 18, bold: true, color: s.color });
+    draw(s.label, sx, y - 36, { size: 8, color: c.light });
+  });
+  y -= statsH + 14;
+
+  // Group by section
+  const colOrder = margin + 8;
+  const colIssue = margin + 105;
+  const colStatus = W - margin - 65;
+
+  const sections = [
+    { key: "Tag", title: "Missende Completed tag", sectionColor: c.orange },
+    { key: "Supabase", title: "Missende Supabase records", sectionColor: c.red },
+    { key: "WA", title: "Mogelijke WA problemen", sectionColor: c.orange },
+  ];
+
+  for (const { key, title, sectionColor } of sections) {
+    const items = dedupedItems.filter((i) => i.section === key);
+    if (items.length === 0) continue;
+
+    ensureSpace(60);
+
+    // Section header
+    drawRect(margin, y - 3, 3, 15, sectionColor);
+    draw(title, margin + 12, y, { size: 11, bold: true });
+    y -= 26;
+
+    // Column headers
+    draw("ORDER", colOrder, y, { size: 7, bold: true, color: c.light });
+    draw("ISSUE", colIssue, y, { size: 7, bold: true, color: c.light });
+    draw("STATUS", colStatus, y, { size: 7, bold: true, color: c.light });
+    y -= 10;
+    page.drawLine({ start: { x: margin, y: y + 2 }, end: { x: W - margin, y: y + 2 }, thickness: 0.3, color: c.line });
+    y -= 6;
+
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      const rowH = 28;
+      ensureSpace(rowH + 4);
+
+      if (i % 2 === 0) drawRect(margin, y - rowH + 10, contentW, rowH, c.bg);
+
+      const orderNum = (item.orderName || "?").replace("#", "");
+      draw(`#${orderNum}`, colOrder, y, { size: 13, bold: true, color: c.primaryDark });
+
+      if (item.issue) {
+        draw(item.issue, colIssue, y + 1, { size: 8.5, color: c.mid, maxWidth: colStatus - colIssue - 12 });
+      }
+
+      if (item.resolved) {
+        pill("OPGELOST", colStatus, y - 1, { bg: c.greenBg, fg: c.green, size: 6.5 });
+      } else {
+        pill("OPEN", colStatus + 10, y - 1, { bg: c.redBg, fg: c.red, size: 6.5 });
+      }
+
+      y -= rowH;
+    }
+    y -= 10;
+    page.drawLine({ start: { x: margin, y }, end: { x: W - margin, y }, thickness: 0.5, color: c.line });
+    y -= 16;
+  }
+
+  // Footer
+  const pages = pdf.getPages();
+  pages.forEach((p, i) => {
+    p.drawLine({ start: { x: margin, y: 42 }, end: { x: W - margin, y: 42 }, thickness: 0.5, color: c.line });
+    const ft = `Pagina ${i + 1} van ${pages.length}`;
+    const ftw = font.widthOfTextAtSize(ft, 7);
+    p.drawText(ft, { x: W - margin - ftw, y: 28, size: 7, font, color: c.light });
+    p.drawText("Voordeelgordijnen  |  Sync Checks", { x: margin, y: 28, size: 7, font, color: c.light });
+  });
+
+  const bytes = await pdf.save();
+  const blob = new Blob([bytes], { type: "application/pdf" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `sync-checks-${dateLabel}.pdf`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 export default function SyncChecks() {
-  const { checks, total, page, error, shop, supabaseUrl, supabaseKey } = useLoaderData();
+  const { checks, total, page, date, error, shop } = useLoaderData();
   const [searchParams, setSearchParams] = useSearchParams();
   const revalidator = useRevalidator();
-  const [infoOpen, setInfoOpen] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const shopify = useAppBridge();
 
-  const handleRealtimeEvent = useCallback(() => {
-    if (revalidator.state === "idle") {
-      revalidator.revalidate();
-    }
+  // Auto-refresh every 60s
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (revalidator.state === "idle") revalidator.revalidate();
+    }, 60_000);
+    return () => clearInterval(interval);
   }, [revalidator]);
-
-  const realtimeStatus = useSupabaseRealtime(
-    supabaseUrl,
-    supabaseKey,
-    ["sync_checks"],
-    handleRealtimeEvent,
-  );
 
   const totalPages = Math.ceil(total / PAGE_SIZE);
 
@@ -707,10 +739,108 @@ export default function SyncChecks() {
     setSearchParams(params);
   }
 
+  function handleDateChange(newDate) {
+    const params = new URLSearchParams(searchParams);
+    if (newDate) {
+      params.set("date", newDate);
+    } else {
+      params.delete("date");
+    }
+    params.delete("page");
+    setSearchParams(params);
+  }
+
+  async function handleExportAll() {
+    if (!date) return;
+    setExporting(true);
+    try {
+      const res = await fetch(`/app/sync-checks/export?date=${date}`);
+      const allChecks = await res.json();
+      await exportAllSyncChecksPdf(allChecks, date);
+    } catch (e) {
+      console.error("Export failed:", e);
+    } finally {
+      setExporting(false);
+    }
+  }
+
   return (
     <Page fullWidth title="Sync Checks">
       <TitleBar title="Sync Checks" />
-      <SyncCheckInfoModal open={infoOpen} onClose={() => setInfoOpen(false)} />
+
+      <Modal id="sync-check-info-modal" variant="large">
+        <Box padding="400">
+          <BlockStack gap="400">
+            <Text variant="headingSm" as="h3">Overzicht</Text>
+            <Text as="p">
+              De Sync Check is een geautomatiseerde workflow (n8n) die <strong>elk uur</strong> draait.
+              Het doel is om te controleren of nieuwe Shopify-orders correct zijn verwerkt door alle
+              gekoppelde systemen. Elke controle kijkt naar orders van de <strong>afgelopen 2 uur</strong>.
+            </Text>
+
+            <Text variant="headingSm" as="h3">Stap 1: Orders ophalen uit Shopify</Text>
+            <Text as="p">
+              Alle orders die in de afgelopen 2 uur zijn aangemaakt worden opgehaald via de Shopify
+              GraphQL API, inclusief tags, line items en productie-bestemming (metafield).
+            </Text>
+
+            <Text variant="headingSm" as="h3">Stap 2: Orders categoriseren</Text>
+            <Text as="p">
+              Elke order wordt ingedeeld op basis van tags en bestemming:
+            </Text>
+            <List type="bullet">
+              <List.Item>
+                <strong>Geen "Completed" tag</strong> — Orders ouder dan 30 minuten die nog geen
+                "Completed" tag hebben.
+              </List.Item>
+              <List.Item>
+                <strong>Kleurstalen (KL)</strong> — Orders met de tag "kleurstaal". Moeten een record
+                hebben in de Kleurstalen tabel in Supabase.
+              </List.Item>
+              <List.Item>
+                <strong>NE-Distriservice (NE)</strong> — Orders met de tag "ne-distriservice". Moeten
+                een record hebben in de nedistri tabel.
+              </List.Item>
+              <List.Item>
+                <strong>Webattelier (WA)</strong> — Orders met productie-bestemming "WA" (geen losse stof).
+                Moeten een record hebben in de Webattelier tabel.
+              </List.Item>
+              <List.Item>
+                <strong>Overig (GH, VDG, DEC, HKL)</strong> — Geen Supabase-check nodig.
+              </List.Item>
+            </List>
+            <Text as="p" tone="subdued">
+              Orders met "vooraf betalen per factuur" worden overgeslagen.
+            </Text>
+
+            <Text variant="headingSm" as="h3">Stap 3: Supabase-records controleren</Text>
+            <Text as="p">
+              Voor elke categorie worden de Supabase-tabellen gecontroleerd. Ontbrekende records worden
+              als probleem gerapporteerd.
+            </Text>
+
+            <Text variant="headingSm" as="h3">Stap 4: Rapport opslaan</Text>
+            <Text as="p">
+              Het rapport wordt opgeslagen in de sync_checks tabel. Bij problemen wordt optioneel een
+              Slack-melding verstuurd.
+            </Text>
+
+            <Divider />
+
+            <Text variant="headingSm" as="h3">Wat je ziet op deze pagina</Text>
+            <Text as="p">
+              Elke kaart is een sync check (een uur). Klik op een kaart om details te zien.
+              Issues zijn onderverdeeld in: Missende Completed tag (oranje), Missende Supabase records
+              (rood), en Mogelijke WA problemen (geel). Elk issue heeft een checkbox om het als opgelost
+              te markeren. Ordernummers linken naar Shopify Admin.
+            </Text>
+          </BlockStack>
+        </Box>
+        <TitleBar title="Hoe werkt de Sync Check?">
+          <button onClick={() => shopify.modal.hide("sync-check-info-modal")}>Sluiten</button>
+        </TitleBar>
+      </Modal>
+
       <BlockStack gap="400">
         <InlineStack align="space-between" blockAlign="center">
           <InlineStack gap="200" blockAlign="center">
@@ -720,28 +850,52 @@ export default function SyncChecks() {
             <Button
               variant="plain"
               icon={InfoIcon}
-              onClick={() => setInfoOpen(true)}
+              onClick={() => shopify.modal.show("sync-check-info-modal")}
               accessibilityLabel="Uitleg sync checks"
             />
           </InlineStack>
+          <Text variant="bodySm" as="span" tone="subdued">
+            {total} checks
+          </Text>
+        </InlineStack>
+
+        <InlineStack gap="300" blockAlign="center" align="space-between">
           <InlineStack gap="200" blockAlign="center">
-            <Text variant="bodySm" as="span" tone="subdued">
-              {total} checks
-            </Text>
-            <Badge
-              tone={
-                realtimeStatus === "connected" ? "success"
-                  : realtimeStatus === "error" ? "critical"
-                  : "attention"
-              }
-              size="small"
-            >
-              {realtimeStatus === "connected" ? "Live"
-                : realtimeStatus === "connecting" ? "Connecting..."
-                : realtimeStatus === "error" ? "Error"
-                : "Offline"}
-            </Badge>
+            <input
+              type="date"
+              value={date || ""}
+              onChange={(e) => handleDateChange(e.target.value)}
+              style={{
+                padding: "6px 12px",
+                borderRadius: "8px",
+                border: "1px solid var(--p-color-border, #c9cccf)",
+                background: "var(--p-color-bg-surface, #fff)",
+                fontSize: "13px",
+                fontFamily: "inherit",
+                color: date ? "inherit" : "var(--p-color-text-subdued, #6d7175)",
+                cursor: "pointer",
+                outline: "none",
+              }}
+            />
+            {date && (
+              <Button
+                variant="plain"
+                onClick={() => handleDateChange("")}
+                accessibilityLabel="Filter wissen"
+              >
+                Wissen
+              </Button>
+            )}
           </InlineStack>
+          {date && (
+            <Button
+              icon={ExportIcon}
+              onClick={handleExportAll}
+              loading={exporting}
+            >
+              Export alles ({date})
+            </Button>
+          )}
         </InlineStack>
 
         {error && (

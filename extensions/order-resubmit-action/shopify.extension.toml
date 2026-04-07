@@ -1,0 +1,14 @@
+api_version = "2026-01"
+
+[[extensions]]
+name = "t:name"
+handle = "order-resubmit-action"
+uid = "ef3f752b-e36b-7910-0787-722dcaf5e1de280d3bc8"
+type = "ui_extension"
+
+[[extensions.targeting]]
+module = "./src/ActionExtension.jsx"
+target = "admin.order-details.action.render"
+
+[extensions.capabilities]
+api_access = true
