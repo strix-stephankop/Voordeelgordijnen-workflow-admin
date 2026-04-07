@@ -53,6 +53,9 @@ const ORDER_QUERY = `
   }
 `;
 
+const WEBHOOK_URL =
+  "https://voordeelgordijnen.n8n.sition.cloud/webhook/252b1295-0a82-4ce5-bfdc-8c66501fef9b";
+
 export default extension("admin.order-details.action.render", async (root, api) => {
   const close = api.close || (() => {});
   const orderId = shopify.data?.selected?.[0]?.id || api.data?.selected?.[0]?.id;
@@ -92,7 +95,7 @@ export default extension("admin.order-details.action.render", async (root, api) 
 
     if (!order) {
       throw new Error(
-        "Geen toegang tot orders. Ga naar Shopify Admin > Settings > Apps > Vogo workflow admin en klik 'Herinstalleren' om scopes bij te werken.",
+        "Geen toegang tot orders. Ga naar Settings > Apps > Vogo workflow admin en herinstalleer om scopes bij te werken.",
       );
     }
 
@@ -120,6 +123,7 @@ export default extension("admin.order-details.action.render", async (root, api) 
     );
   }
 
+  // ── Main overview ──
   function renderUI() {
     action.replaceChildren();
 
@@ -127,7 +131,10 @@ export default extension("admin.order-details.action.render", async (root, api) 
       title: `Bied opnieuw aan — ${order.name}`,
       primaryAction: root.createComponent(
         "Button",
-        { onPress: handleSubmit, disabled: lineItems.length === 0 },
+        {
+          onPress: handleSubmit,
+          disabled: lineItems.length === 0,
+        },
         "Bevestig & bied aan",
       ),
       secondaryAction: root.createComponent(
@@ -137,116 +144,159 @@ export default extension("admin.order-details.action.render", async (root, api) 
       ),
     });
 
-    const container = root.createComponent("BlockStack", { gap: "base" });
+    const container = root.createComponent("BlockStack", { gap: "large" });
+
+    // Summary banner
+    const summaryText = `${lineItems.length} item${lineItems.length !== 1 ? "s" : ""} — Totaal: ${formatTotal()} ${lineItems[0]?.currency || "EUR"}`;
+    container.appendChild(
+      root.createComponent("Banner", { tone: "info" }, summaryText),
+    );
 
     if (lineItems.length === 0) {
       container.appendChild(
         root.createComponent(
           "Banner",
           { tone: "warning" },
-          "Alle line items zijn verwijderd.",
+          "Alle line items zijn verwijderd. Voeg items toe of annuleer.",
         ),
       );
     }
 
+    // Line items
     for (const item of lineItems) {
-      const section = root.createComponent("Section", {});
-      const sectionStack = root.createComponent("BlockStack", { gap: "base" });
-
-      const headerRow = root.createComponent("InlineStack", {
-        gap: "base",
-        blockAlignment: "center",
-        inlineAlignment: "space-between",
-      });
-
-      const titleStack = root.createComponent("BlockStack", { gap: "extraTight" });
-      titleStack.appendChild(
-        root.createComponent("Text", { fontWeight: "bold" }, item.title),
-      );
-      titleStack.appendChild(
-        root.createComponent(
-          "Text",
-          {},
-          [item.variantTitle, item.sku && `SKU: ${item.sku}`]
-            .filter(Boolean)
-            .join(" — ") || "Geen variant",
-        ),
-      );
-      headerRow.appendChild(titleStack);
-
-      headerRow.appendChild(
-        root.createComponent(
-          "Button",
-          {
-            tone: "critical",
-            onPress: () => {
-              lineItems = lineItems.filter((li) => li._key !== item._key);
-              renderUI();
-            },
-          },
-          "Verwijder",
-        ),
-      );
-      sectionStack.appendChild(headerRow);
-
-      const detailsRow = root.createComponent("InlineStack", {
-        gap: "base",
-        blockAlignment: "center",
-      });
-      detailsRow.appendChild(
-        root.createComponent("NumberField", {
-          label: "Aantal",
-          value: item.quantity,
-          min: 1,
-          onChange: (val) => {
-            item.quantity = Math.max(1, val);
-          },
-        }),
-      );
-      detailsRow.appendChild(
-        root.createComponent("TextField", {
-          label: "Prijs",
-          value: item.price,
-          readOnly: true,
-        }),
-      );
-      sectionStack.appendChild(detailsRow);
-
-      const propsStack = root.createComponent("BlockStack", { gap: "tight" });
-
-      if (item.properties.length > 0) {
-        for (const prop of item.properties.slice(0, 3)) {
-          propsStack.appendChild(
-            root.createComponent("Text", {}, `${prop.key}: ${prop.value}`),
-          );
-        }
-        if (item.properties.length > 3) {
-          propsStack.appendChild(
-            root.createComponent("Text", {}, `+ ${item.properties.length - 3} meer...`),
-          );
-        }
-      } else {
-        propsStack.appendChild(
-          root.createComponent("Text", {}, "Geen eigenschappen"),
-        );
-      }
-
-      propsStack.appendChild(
-        root.createComponent(
-          "Button",
-          { onPress: () => renderEditProperties(item) },
-          `Bewerk eigenschappen (${item.properties.length})`,
-        ),
-      );
-
-      sectionStack.appendChild(propsStack);
-      section.appendChild(sectionStack);
-      container.appendChild(section);
+      container.appendChild(renderLineItem(item));
     }
 
     action.appendChild(container);
   }
 
+  function formatTotal() {
+    const total = lineItems.reduce(
+      (sum, item) => sum + parseFloat(item.price || 0) * item.quantity,
+      0,
+    );
+    return total.toFixed(2);
+  }
+
+  // ── Single line item card ──
+  function renderLineItem(item) {
+    const section = root.createComponent("Section", {
+      heading: item.title,
+    });
+    const stack = root.createComponent("BlockStack", { gap: "base" });
+
+    // Variant + SKU + Price summary line
+    const metaLine = [
+      item.variantTitle,
+      item.sku && `SKU: ${item.sku}`,
+      `€${item.price}`,
+    ]
+      .filter(Boolean)
+      .join("  ·  ");
+
+    stack.appendChild(root.createComponent("Text", { tone: "subdued" }, metaLine));
+
+    // Quantity row
+    const qtyRow = root.createComponent("InlineStack", {
+      gap: "base",
+      blockAlignment: "center",
+      inlineAlignment: "space-between",
+    });
+
+    qtyRow.appendChild(
+      root.createComponent("NumberField", {
+        label: "Aantal",
+        value: item.quantity,
+        min: 1,
+        onChange: (val) => {
+          item.quantity = Math.max(1, val);
+        },
+      }),
+    );
+
+    qtyRow.appendChild(
+      root.createComponent(
+        "Button",
+        {
+          tone: "critical",
+          variant: "tertiary",
+          onPress: () => {
+            lineItems = lineItems.filter((li) => li._key !== item._key);
+            renderUI();
+          },
+        },
+        "Verwijder item",
+      ),
+    );
+
+    stack.appendChild(qtyRow);
+
+    // Properties
+    if (item.properties.length > 0) {
+      stack.appendChild(root.createComponent("Divider", {}));
+
+      const propsHeadRow = root.createComponent("InlineStack", {
+        gap: "base",
+        blockAlignment: "center",
+        inlineAlignment: "space-between",
+      });
+      propsHeadRow.appendChild(
+        root.createComponent("Text", { fontWeight: "bold" }, "Eigenschappen"),
+      );
+      propsHeadRow.appendChild(
+        root.createComponent(
+          "Button",
+          {
+            variant: "tertiary",
+            onPress: () => renderEditProperties(item),
+          },
+          "Bewerken",
+        ),
+      );
+      stack.appendChild(propsHeadRow);
+
+      const propsGrid = root.createComponent("BlockStack", { gap: "extraTight" });
+      for (const prop of item.properties) {
+        if (!prop.key) continue;
+        const propRow = root.createComponent("InlineStack", {
+          gap: "tight",
+          blockAlignment: "center",
+        });
+        propRow.appendChild(
+          root.createComponent("Text", { fontWeight: "bold" }, `${prop.key}:`),
+        );
+        propRow.appendChild(root.createComponent("Text", {}, prop.value));
+        propsGrid.appendChild(propRow);
+      }
+      stack.appendChild(propsGrid);
+    } else {
+      stack.appendChild(root.createComponent("Divider", {}));
+      const noPropsRow = root.createComponent("InlineStack", {
+        gap: "base",
+        blockAlignment: "center",
+        inlineAlignment: "space-between",
+      });
+      noPropsRow.appendChild(
+        root.createComponent("Text", { tone: "subdued" }, "Geen eigenschappen"),
+      );
+      noPropsRow.appendChild(
+        root.createComponent(
+          "Button",
+          {
+            variant: "tertiary",
+            onPress: () => renderEditProperties(item),
+          },
+          "+ Toevoegen",
+        ),
+      );
+      stack.appendChild(noPropsRow);
+    }
+
+    section.appendChild(stack);
+    return section;
+  }
+
+  // ── Edit properties view ──
   function renderEditProperties(item) {
     action.replaceChildren();
 
@@ -266,18 +316,38 @@ export default extension("admin.order-details.action.render", async (root, api) 
 
     const container = root.createComponent("BlockStack", { gap: "base" });
 
+    container.appendChild(
+      root.createComponent(
+        "Banner",
+        { tone: "info" },
+        "Bewerk de eigenschappen van dit item. Klik 'Klaar' om terug te gaan.",
+      ),
+    );
+
     function renderPropertyRows() {
-      container.replaceChildren();
+      // Remove all children except the banner
+      while (container.children.length > 1) {
+        container.removeChild(container.children[container.children.length - 1]);
+      }
+
+      if (item.properties.length === 0) {
+        container.appendChild(
+          root.createComponent("Text", { tone: "subdued" }, "Nog geen eigenschappen."),
+        );
+      }
 
       for (let pi = 0; pi < item.properties.length; pi++) {
         const prop = item.properties[pi];
         const propIdx = pi;
 
-        const row = root.createComponent("InlineStack", {
-          gap: "tight",
-          blockAlignment: "center",
+        const card = root.createComponent("Section", {});
+        const row = root.createComponent("BlockStack", { gap: "tight" });
+
+        const fields = root.createComponent("InlineStack", {
+          gap: "base",
+          blockAlignment: "end",
         });
-        row.appendChild(
+        fields.appendChild(
           root.createComponent("TextField", {
             label: "Naam",
             value: prop.key,
@@ -286,7 +356,7 @@ export default extension("admin.order-details.action.render", async (root, api) 
             },
           }),
         );
-        row.appendChild(
+        fields.appendChild(
           root.createComponent("TextField", {
             label: "Waarde",
             value: prop.value,
@@ -295,26 +365,31 @@ export default extension("admin.order-details.action.render", async (root, api) 
             },
           }),
         );
-        row.appendChild(
+        fields.appendChild(
           root.createComponent(
             "Button",
             {
               tone: "critical",
+              variant: "tertiary",
               onPress: () => {
                 item.properties.splice(propIdx, 1);
                 renderPropertyRows();
               },
             },
-            "X",
+            "Verwijder",
           ),
         );
-        container.appendChild(row);
+
+        row.appendChild(fields);
+        card.appendChild(row);
+        container.appendChild(card);
       }
 
       container.appendChild(
         root.createComponent(
           "Button",
           {
+            variant: "secondary",
             onPress: () => {
               item.properties.push({ key: "", value: "" });
               renderPropertyRows();
@@ -329,21 +404,27 @@ export default extension("admin.order-details.action.render", async (root, api) 
     action.appendChild(container);
   }
 
+  // ── Submit to webhook ──
   function handleSubmit() {
     if (lineItems.length === 0) return;
 
     action.replaceChildren();
     action.updateProps({
-      title: "Verzenden...",
+      title: `Verzenden — ${order.name}`,
       primaryAction: null,
       secondaryAction: null,
     });
+
     const sendingStack = root.createComponent("BlockStack", {
       inlineAlignment: "center",
       padding: "large400",
+      gap: "base",
     });
     sendingStack.appendChild(
       root.createComponent("ProgressIndicator", { size: "small-200" }),
+    );
+    sendingStack.appendChild(
+      root.createComponent("Text", { tone: "subdued" }, "Order wordt verzonden..."),
     );
     action.appendChild(sendingStack);
 
@@ -368,10 +449,7 @@ export default extension("admin.order-details.action.render", async (root, api) 
       })),
     };
 
-    const webhookUrl =
-      "https://voordeelgordijnen.n8n.sition.cloud/webhook/252b1295-0a82-4ce5-bfdc-8c66501fef9b";
-
-    fetch(webhookUrl, {
+    fetch(WEBHOOK_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
@@ -380,7 +458,7 @@ export default extension("admin.order-details.action.render", async (root, api) 
         if (!res.ok) throw new Error(`Webhook error: ${res.status}`);
         action.replaceChildren();
         action.updateProps({
-          title: "Bied opnieuw aan",
+          title: `Verzonden — ${order.name}`,
           primaryAction: null,
           secondaryAction: root.createComponent(
             "Button",
@@ -392,23 +470,23 @@ export default extension("admin.order-details.action.render", async (root, api) 
           root.createComponent(
             "Banner",
             { tone: "success" },
-            `Order ${order.name} is opnieuw aangeboden.`,
+            `Order ${order.name} is succesvol opnieuw aangeboden met ${lineItems.length} item(s).`,
           ),
         );
       })
       .catch((e) => {
         action.replaceChildren();
         action.updateProps({
-          title: "Bied opnieuw aan",
+          title: `Fout — ${order.name}`,
           primaryAction: root.createComponent(
             "Button",
-            { onPress: () => renderUI() },
-            "Terug",
+            { onPress: handleSubmit },
+            "Opnieuw proberen",
           ),
           secondaryAction: root.createComponent(
             "Button",
-            { onPress: close },
-            "Sluiten",
+            { onPress: () => renderUI() },
+            "Terug",
           ),
         });
         action.appendChild(
