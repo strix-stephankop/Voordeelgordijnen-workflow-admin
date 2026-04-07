@@ -129,19 +129,6 @@ export default extension("admin.order-details.action.render", async (root, api) 
 
     action.updateProps({
       title: `Bied opnieuw aan — ${order.name}`,
-      primaryAction: root.createComponent(
-        "Button",
-        {
-          onPress: handleSubmit,
-          disabled: lineItems.length === 0,
-        },
-        "Bevestig & bied aan",
-      ),
-      secondaryAction: root.createComponent(
-        "Button",
-        { onPress: close },
-        "Annuleren",
-      ),
     });
 
     const container = root.createComponent("BlockStack", { gap: "large" });
@@ -166,6 +153,31 @@ export default extension("admin.order-details.action.render", async (root, api) 
     for (const item of lineItems) {
       container.appendChild(renderLineItem(item));
     }
+
+    // Action buttons at the bottom
+    const buttonRow = root.createComponent("InlineStack", {
+      gap: "base",
+      inlineAlignment: "end",
+    });
+    buttonRow.appendChild(
+      root.createComponent(
+        "Button",
+        { onPress: close },
+        "Annuleren",
+      ),
+    );
+    buttonRow.appendChild(
+      root.createComponent(
+        "Button",
+        {
+          variant: "primary",
+          onPress: handleSubmit,
+          disabled: lineItems.length === 0,
+        },
+        "Bevestig & bied aan",
+      ),
+    );
+    container.appendChild(buttonRow);
 
     action.appendChild(container);
   }
@@ -302,16 +314,6 @@ export default extension("admin.order-details.action.render", async (root, api) 
 
     action.updateProps({
       title: `Eigenschappen — ${item.title}`,
-      primaryAction: root.createComponent(
-        "Button",
-        { onPress: () => renderUI() },
-        "Klaar",
-      ),
-      secondaryAction: root.createComponent(
-        "Button",
-        { onPress: close },
-        "Annuleren",
-      ),
     });
 
     const container = root.createComponent("BlockStack", { gap: "base" });
@@ -401,6 +403,21 @@ export default extension("admin.order-details.action.render", async (root, api) 
     }
 
     renderPropertyRows();
+
+    // Back button
+    const backRow = root.createComponent("InlineStack", {
+      gap: "base",
+      inlineAlignment: "end",
+    });
+    backRow.appendChild(
+      root.createComponent(
+        "Button",
+        { variant: "primary", onPress: () => renderUI() },
+        "Klaar",
+      ),
+    );
+    container.appendChild(backRow);
+
     action.appendChild(container);
   }
 
