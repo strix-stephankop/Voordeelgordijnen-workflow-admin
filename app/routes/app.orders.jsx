@@ -38,13 +38,14 @@ export const loader = async ({ request }) => {
   const search = url.searchParams.get("q") || "";
   const sortBy = url.searchParams.get("sort") || "id";
   const sortDir = url.searchParams.get("dir") || "desc";
+  const status = url.searchParams.get("status") ?? "open";
   const from = (page - 1) * PAGE_SIZE;
   const to = from + PAGE_SIZE - 1;
 
   try {
     const { data, count } = search
-      ? await searchOrders(search, { from, to, sortBy, sortDir })
-      : await queryTable("Webattelier - orders", { from, to, sortBy, sortDir });
+      ? await searchOrders(search, { from, to, sortBy, sortDir, status })
+      : await queryTable("Webattelier - orders", { from, to, sortBy, sortDir, status });
 
     const orderIds = data.map((o) => String(o.id)).filter(Boolean);
     const linesByOrder = await queryLinesByOrderNumbers(orderIds);
@@ -58,6 +59,7 @@ export const loader = async ({ request }) => {
       error: null,
       sortBy,
       sortDir,
+      status,
       shop,
       supabaseUrl: process.env.SUPABASE_URL,
       supabaseKey: process.env.SUPABASE_ANON_KEY,
@@ -119,7 +121,7 @@ function useSupabaseRealtime(supabaseUrl, supabaseKey, tables, onEvent) {
     };
   }, [supabaseUrl, supabaseKey, tables.join(",")]);
 
-  return status;
+  return { status, clientRef };
 }
 
 /* ── Helpers ── */
@@ -256,16 +258,23 @@ function reverseCalculateFields(values, line) {
   const pLeft = values.panelsLeft === "" ? null : Number(values.panelsLeft);
   const pRight = values.panelsRight === "" ? null : Number(values.panelsRight);
 
-  let finWidthLeft, finWidthRight;
+  let finWidthLeft, finWidthRight, cutLeft, cutRight;
   if (isOG) {
+    // For OG: cutSize is per-panel (heightMm + 250) stored in cm — don't overwrite with total knipmaat
     finWidthLeft = line.finishedWidthLeftInMm;
     finWidthRight = line.finishedWidthRightInMm;
+    cutLeft = line.cutSizeLeftInMm;
+    cutRight = line.cutSizeRightInMm;
   } else if (plooiFactor > 0) {
     finWidthLeft = knipmaatLeftCm != null ? Math.round((knipmaatLeftCm * 10) / plooiFactor) : null;
     finWidthRight = knipmaatRightCm != null ? Math.round((knipmaatRightCm * 10) / plooiFactor) : null;
+    cutLeft = knipmaatLeftCm;
+    cutRight = knipmaatRightCm;
   } else {
     finWidthLeft = line.finishedWidthLeftInMm;
     finWidthRight = line.finishedWidthRightInMm;
+    cutLeft = knipmaatLeftCm;
+    cutRight = knipmaatRightCm;
   }
 
   return {
@@ -273,8 +282,8 @@ function reverseCalculateFields(values, line) {
     finishedWidthRightInMm: finWidthRight,
     panelsLeft: pLeft,
     panelsRight: pRight,
-    cutSizeLeftInMm: knipmaatLeftCm,
-    cutSizeRightInMm: knipmaatRightCm,
+    cutSizeLeftInMm: cutLeft,
+    cutSizeRightInMm: cutRight,
   };
 }
 
@@ -451,9 +460,17 @@ function OrderLine({ line }) {
 
 /* ── Order Card ── */
 
-function OrderCard({ order, lines, shop }) {
+function OrderCard({ order, lines, shop, highlighted, readOnly }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [printing, setPrinting] = useState(false);
+  const [archiving, setArchiving] = useState(false);
+  const cardRef = useRef(null);
+
+  useEffect(() => {
+    if (highlighted && cardRef.current) {
+      cardRef.current.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+  }, [highlighted]);
 
   const orderId = order.id != null ? String(order.id) : "—";
   const customerName = order["customer name"] || "—";
@@ -472,6 +489,10 @@ function OrderCard({ order, lines, shop }) {
         },
       );
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      if (data.pdf_url) {
+        window.open(data.pdf_url, "_blank");
+      }
     } catch (e) {
       console.error("Print & verstuur failed:", e);
     } finally {
@@ -479,7 +500,35 @@ function OrderCard({ order, lines, shop }) {
     }
   }
 
+  async function handleArchiveAndSend() {
+    setArchiving(true);
+    try {
+      const res = await fetch(
+        "https://voordeelgordijnen.n8n.sition.cloud/webhook/7e0022e4-630d-4f0d-99aa-efc0864457c1",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ orderId }),
+        },
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } catch (e) {
+      console.error("Archiveer & verstuur failed:", e);
+    } finally {
+      setArchiving(false);
+    }
+  }
+
   return (
+    <div
+      ref={cardRef}
+      style={{
+        borderRadius: "12px",
+        transition: "box-shadow 0.3s ease, outline 0.3s ease",
+        boxShadow: highlighted ? "0 0 0 3px rgba(192, 43, 43, 0.35)" : "none",
+        outline: highlighted ? "2px solid rgba(192, 43, 43, 0.6)" : "2px solid transparent",
+      }}
+    >
     <Card>
       <BlockStack gap="0">
         {/* Header */}
@@ -498,30 +547,37 @@ function OrderCard({ order, lines, shop }) {
               </Text>
             </InlineStack>
             <InlineStack gap="200" blockAlign="center">
-              <Button variant="primary" tone="critical" onClick={handlePrintAndSend} loading={printing}>
-                Print &amp; verstuur
-              </Button>
-              <Button>Archiveer &amp; verstuur</Button>
-              <Popover
-                active={menuOpen}
-                onClose={() => setMenuOpen(false)}
-                activator={
-                  <Button
-                    onClick={() => setMenuOpen((o) => !o)}
-                    accessibilityLabel="More actions"
-                    icon={<span style={{ fontSize: "1.2em" }}>···</span>}
-                  />
-                }
-              >
-                <ActionList
-                  items={[
-                    { content: "Bekijk details", onAction: () => window.open(`https://${shop}/admin/orders?query=name%3A%23${orderId}`, '_blank') },
-                    { content: "Bewerk order" },
-                    { content: "Verwijder", destructive: true },
-                  ]}
-                  onActionAnyItem={() => setMenuOpen(false)}
-                />
-              </Popover>
+              {readOnly ? (
+                <Button variant="primary" onClick={handlePrintAndSend} loading={printing}>
+                  Print
+                </Button>
+              ) : (
+                <>
+                  <Button variant="primary" tone="critical" onClick={handlePrintAndSend} loading={printing}>
+                    Print &amp; verstuur
+                  </Button>
+                  <Button onClick={handleArchiveAndSend} loading={archiving}>Archiveer &amp; verstuur</Button>
+                  <Popover
+                    active={menuOpen}
+                    onClose={() => setMenuOpen(false)}
+                    activator={
+                      <Button
+                        onClick={() => setMenuOpen((o) => !o)}
+                        accessibilityLabel="More actions"
+                        icon={<span style={{ fontSize: "1.2em" }}>···</span>}
+                      />
+                    }
+                  >
+                    <ActionList
+                      items={[
+                        { content: "Bekijk details", onAction: () => window.open(`https://${shop}/admin/orders?query=name%3A%23${orderId}`, '_blank') },
+                        { content: "Verwijder", destructive: true },
+                      ]}
+                      onActionAnyItem={() => setMenuOpen(false)}
+                    />
+                  </Popover>
+                </>
+              )}
             </InlineStack>
           </InlineStack>
         </Box>
@@ -548,23 +604,46 @@ function OrderCard({ order, lines, shop }) {
         )}
       </BlockStack>
     </Card>
+    </div>
   );
 }
 
 /* ── Main Page ── */
 
 export default function Orders() {
-  const { orders, linesByOrder, total, page, search, error, sortBy, sortDir, shop, supabaseUrl, supabaseKey } =
+  const { orders, linesByOrder, total, page, search, error, sortBy, sortDir, status, shop, supabaseUrl, supabaseKey } =
     useLoaderData();
+  const [bulkPrinting, setBulkPrinting] = useState(false);
+  const [bulkProgress, setBulkProgress] = useState({ step: "", current: 0, total: 0 });
   const navigation = useNavigation();
   const revalidator = useRevalidator();
   const [searchParams, setSearchParams] = useSearchParams();
   const [lastEvent, setLastEvent] = useState(null);
   const [searchValue, setSearchValue] = useState(search || "");
 
+  const [changedIds, setChangedIds] = useState(new Set());
+  const changedTimers = useRef({});
+
   const handleRealtimeEvent = useCallback(
     (payload) => {
       setLastEvent({ type: payload.eventType, at: Date.now() });
+
+      // Track which order changed for highlight animation
+      const record = payload.new || payload.old || {};
+      const changedId = record.id ?? record.orderId;
+      if (changedId != null) {
+        const key = String(changedId);
+        setChangedIds((prev) => new Set(prev).add(key));
+        clearTimeout(changedTimers.current[key]);
+        changedTimers.current[key] = setTimeout(() => {
+          setChangedIds((prev) => {
+            const next = new Set(prev);
+            next.delete(key);
+            return next;
+          });
+        }, 2000);
+      }
+
       if (revalidator.state === "idle") {
         revalidator.revalidate();
       }
@@ -573,7 +652,7 @@ export default function Orders() {
   );
 
   const realtimeTables = ["Webattelier - orders", "Webattelier - lines"];
-  const realtimeStatus = useSupabaseRealtime(
+  const { status: realtimeStatus, clientRef } = useSupabaseRealtime(
     supabaseUrl,
     supabaseKey,
     realtimeTables,
@@ -590,20 +669,101 @@ export default function Orders() {
     return () => clearInterval(interval);
   }, [revalidator]);
 
-  const [selectedTab, setSelectedTab] = useState(0);
-
   const STATUS_TABS = [
-    { id: "all", content: "Alle", filter: null },
+    { id: "all", content: "Alle", filter: "" },
     { id: "open", content: "Open", filter: "open" },
     { id: "ready-for-print", content: "Ready for print", filter: "ready for print" },
-    { id: "archived", content: "Archived", filter: "archived" },
+    { id: "done", content: "Done", filter: "done" },
     { id: "deleted", content: "Deleted", filter: "deleted" },
   ];
 
-  const activeFilter = STATUS_TABS[selectedTab].filter;
-  const filteredOrders = activeFilter
-    ? orders.filter((o) => String(o.status || "").toLowerCase() === activeFilter)
-    : orders;
+  const selectedTab = Math.max(0, STATUS_TABS.findIndex((t) => t.filter === status));
+
+  function handleTabChange(index) {
+    const params = new URLSearchParams(searchParams);
+    const filter = STATUS_TABS[index].filter;
+    params.set("status", filter);
+    params.delete("page");
+    setSearchParams(params);
+  }
+
+  async function handleBulkPrint() {
+    const orderIds = orders.map((o) => String(o.id)).filter(Boolean);
+    if (orderIds.length === 0) return;
+    setBulkPrinting(true);
+
+    try {
+      const total = orderIds.length;
+      const pdfUrls = [];
+
+      // Step 1: Fetch PDF URLs from webhook
+      for (let i = 0; i < orderIds.length; i++) {
+        setBulkProgress({ step: "fetch", current: i + 1, total });
+        try {
+          const res = await fetch(
+            "https://voordeelgordijnen.n8n.sition.cloud/webhook/377b0505-2c7c-4808-8643-eb74796f1449",
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ orderId: orderIds[i] }),
+            },
+          );
+          if (!res.ok) continue;
+          const data = await res.json();
+          if (data.pdf_url) pdfUrls.push(data.pdf_url);
+        } catch (e) {
+          console.error("Failed to get PDF for order", orderIds[i], e);
+        }
+      }
+
+      // Step 2: Download and merge PDFs
+      if (pdfUrls.length > 0) {
+        setBulkProgress({ step: "download", current: 0, total: pdfUrls.length });
+        const { PDFDocument } = await import("pdf-lib");
+        const mergedPdf = await PDFDocument.create();
+
+        for (let i = 0; i < pdfUrls.length; i++) {
+          setBulkProgress({ step: "download", current: i + 1, total: pdfUrls.length });
+          try {
+            const pdfRes = await fetch(pdfUrls[i]);
+            const pdfBytes = await pdfRes.arrayBuffer();
+            const doc = await PDFDocument.load(pdfBytes);
+            const pages = await mergedPdf.copyPages(doc, doc.getPageIndices());
+            pages.forEach((p) => mergedPdf.addPage(p));
+          } catch (e) {
+            console.error("Failed to load PDF:", pdfUrls[i], e);
+          }
+        }
+
+        setBulkProgress({ step: "merge", current: 0, total: 0 });
+        const mergedBytes = await mergedPdf.save();
+        const blob = new Blob([mergedBytes], { type: "application/pdf" });
+        const url = URL.createObjectURL(blob);
+        window.open(url, "_blank");
+      }
+
+      // Step 3: Set all orders to Done
+      if (clientRef.current) {
+        const uuids = orders.map((o) => o.uuid).filter(Boolean);
+        const BATCH_SIZE = 100;
+        const totalBatches = Math.ceil(uuids.length / BATCH_SIZE);
+        for (let i = 0; i < uuids.length; i += BATCH_SIZE) {
+          const batchNum = Math.floor(i / BATCH_SIZE) + 1;
+          setBulkProgress({ step: "status", current: batchNum, total: totalBatches });
+          const batch = uuids.slice(i, i + BATCH_SIZE);
+          await clientRef.current
+            .from("Webattelier - orders")
+            .update({ status: "Done" })
+            .in("uuid", batch);
+        }
+      }
+    } catch (e) {
+      console.error("Bulk print failed:", e);
+    } finally {
+      setBulkPrinting(false);
+      setBulkProgress({ step: "", current: 0, total: 0 });
+    }
+  }
 
   const isLoading = navigation.state === "loading";
   const totalPages = Math.ceil(total / PAGE_SIZE);
@@ -648,8 +808,8 @@ export default function Orders() {
   }
 
   return (
-    <Page fullWidth title="Kleurstalen">
-      <TitleBar title="Kleurstalen" />
+    <Page fullWidth title="Webattelier">
+      <TitleBar title="Webattelier" />
       <BlockStack gap="400">
         {/* Top bar: search + status */}
         <InlineStack align="space-between" blockAlign="center">
@@ -722,15 +882,31 @@ export default function Orders() {
           </Banner>
         )}
 
-        <Tabs tabs={STATUS_TABS} selected={selectedTab} onSelect={setSelectedTab}>
-          {/* Orders */}
+        <Tabs tabs={STATUS_TABS} selected={selectedTab} onSelect={handleTabChange}>
+          {status === "ready for print" && orders.length > 0 && (
+            <Box paddingBlockStart="300" paddingBlockEnd="300">
+              <InlineStack gap="300" blockAlign="center">
+                <Button variant="primary" onClick={handleBulkPrint} loading={bulkPrinting}>
+                  Print alle ({orders.length})
+                </Button>
+                {bulkPrinting && bulkProgress.step && (
+                  <Text variant="bodySm" as="span" tone="subdued">
+                    {bulkProgress.step === "fetch" && `PDF's ophalen... (${bulkProgress.current}/${bulkProgress.total})`}
+                    {bulkProgress.step === "download" && `PDF's downloaden... (${bulkProgress.current}/${bulkProgress.total})`}
+                    {bulkProgress.step === "merge" && "PDF's samenvoegen..."}
+                    {bulkProgress.step === "status" && `Status bijwerken... (${bulkProgress.current}/${bulkProgress.total})`}
+                  </Text>
+                )}
+              </InlineStack>
+            </Box>
+          )}
           {isLoading ? (
             <Box padding="800">
               <InlineStack align="center">
                 <Spinner size="large" />
               </InlineStack>
             </Box>
-          ) : filteredOrders.length === 0 ? (
+          ) : orders.length === 0 ? (
             <Card>
               <Box padding="800">
                 <BlockStack gap="200" inlineAlign="center">
@@ -740,7 +916,7 @@ export default function Orders() {
                   <Text variant="bodySm" as="span" tone="subdued">
                     {search
                       ? `Geen resultaten voor "${search}"`
-                      : activeFilter
+                      : status
                         ? `Geen orders met status "${STATUS_TABS[selectedTab].content}"`
                         : "Orders uit de Webattelier - orders tabel verschijnen hier."}
                   </Text>
@@ -749,10 +925,12 @@ export default function Orders() {
             </Card>
           ) : (
             <BlockStack gap="400">
-              {filteredOrders.map((order, i) => {
+              {orders.map((order, i) => {
                 const orderId = order.id != null ? String(order.id) : null;
                 const lines = orderId ? linesByOrder[orderId] || [] : [];
-                return <OrderCard key={orderId ?? i} order={order} lines={lines} shop={shop} />;
+                const highlighted = orderId ? changedIds.has(orderId) : false;
+                const isReadOnly = status === "done" || status === "ready for print";
+                return <OrderCard key={orderId ?? i} order={order} lines={lines} shop={shop} highlighted={highlighted} readOnly={isReadOnly} />;
               })}
             </BlockStack>
           )}
@@ -770,6 +948,7 @@ export default function Orders() {
             />
           </InlineStack>
         )}
+        <Box paddingBlockEnd="800" />
       </BlockStack>
     </Page>
   );
