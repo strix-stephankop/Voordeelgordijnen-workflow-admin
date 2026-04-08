@@ -179,92 +179,73 @@ export default extension("admin.order-details.action.render", async (root, api) 
 
   // ── Single line item row ──
   function renderLineItem(item) {
-    const wrapper = root.createComponent("BlockStack", { gap: "tight", padding: "base" });
+    const wrapper = root.createComponent("BlockStack", { gap: "tight" });
 
-    // Row 1: Title ... price × qty   total   [X]
-    const topRow = root.createComponent("InlineStack", {
+    // Header: Title + Remove button
+    const headerRow = root.createComponent("InlineStack", {
       gap: "base",
       blockAlignment: "center",
       inlineAlignment: "space-between",
     });
-
-    topRow.appendChild(
+    headerRow.appendChild(
       root.createComponent("Text", { fontWeight: "bold" }, item.title),
     );
-
-    const rightSide = root.createComponent("InlineStack", {
-      gap: "tight",
-      blockAlignment: "center",
-    });
-
-    const lineTotal = (parseFloat(item.price || 0) * item.quantity).toFixed(2);
-    rightSide.appendChild(
-      root.createComponent("Text", { tone: "subdued" }, `€${item.price}`),
-    );
-    rightSide.appendChild(
-      root.createComponent("Text", { tone: "subdued" }, "×"),
-    );
-    rightSide.appendChild(
-      root.createComponent("NumberField", {
-        label: "Aantal",
-        labelAccessibilityVisibility: "exclusive",
-        value: item.quantity,
-        min: 1,
-        onChange: (val) => { item.quantity = Math.max(1, val); },
-      }),
-    );
-    rightSide.appendChild(
-      root.createComponent("Text", {}, `€${lineTotal}`),
-    );
-    rightSide.appendChild(
+    headerRow.appendChild(
       root.createComponent(
         "Button",
         {
           tone: "critical",
           variant: "tertiary",
-          icon: "delete",
-          accessibilityLabel: "Verwijder",
           onPress: () => {
             lineItems = lineItems.filter((li) => li._key !== item._key);
             renderUI();
           },
         },
+        "Verwijder",
       ),
     );
+    wrapper.appendChild(headerRow);
 
-    topRow.appendChild(rightSide);
-    wrapper.appendChild(topRow);
+    // Variant info
+    const variantText = [item.variantTitle, item.sku && `SKU: ${item.sku}`]
+      .filter(Boolean)
+      .join(" · ");
+    if (variantText) {
+      wrapper.appendChild(
+        root.createComponent("Text", { tone: "subdued" }, variantText),
+      );
+    }
 
-    // Row 2: Properties as subdued key: value lines + edit button
+    // Properties
     const visibleProps = (item.properties || []).filter((p) => p.key);
     if (visibleProps.length > 0) {
       const propsBlock = root.createComponent("BlockStack", { gap: "extraTight" });
       for (const prop of visibleProps) {
-        const propRow = root.createComponent("InlineStack", { gap: "tight" });
-        propRow.appendChild(
+        propsBlock.appendChild(
           root.createComponent("Text", { tone: "subdued" }, `${prop.key}: ${prop.value}`),
         );
-        propsBlock.appendChild(propRow);
       }
-
-      const editRow = root.createComponent("InlineStack", {
-        inlineAlignment: "end",
-      });
-      editRow.appendChild(
-        root.createComponent(
-          "Button",
-          {
-            variant: "tertiary",
-            icon: "edit",
-            accessibilityLabel: "Bewerk eigenschappen",
-            onPress: () => renderEditProperties(item),
-          },
-        ),
-      );
-
       wrapper.appendChild(propsBlock);
-      wrapper.appendChild(editRow);
     }
+
+    // Action buttons: Edit properties
+    const actionsRow = root.createComponent("InlineStack", {
+      gap: "base",
+      blockAlignment: "center",
+    });
+    actionsRow.appendChild(
+      root.createComponent(
+        "Button",
+        {
+          variant: "tertiary",
+          onPress: () => renderEditProperties(item),
+        },
+        visibleProps.length > 0
+          ? `Bewerk eigenschappen (${visibleProps.length})`
+          : "+ Eigenschappen toevoegen",
+      ),
+    );
+    wrapper.appendChild(actionsRow);
 
     return wrapper;
   }
