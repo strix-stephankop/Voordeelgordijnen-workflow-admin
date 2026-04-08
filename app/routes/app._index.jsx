@@ -4,6 +4,7 @@ import {
   useSearchParams,
   useNavigation,
   useFetcher,
+  Link,
 } from "@remix-run/react";
 import { json } from "@remix-run/node";
 import {
@@ -32,6 +33,8 @@ import { ChevronDownIcon, ChevronRightIcon } from "@shopify/polaris-icons";
 import { TitleBar, Modal, useAppBridge } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
 import { syncExecutions } from "../n8n-sync.server";
+import prisma from "../db.server";
+import { NAV_PAGES } from "./app";
 import {
   searchSoftrRecords,
   hasCachedData,
@@ -68,8 +71,16 @@ export const loader = async ({ request }) => {
 
   syncExecutions().catch(() => {});
 
+  let pageVisibility = {};
+  try {
+    const setting = await prisma.setting.findUnique({ where: { key: "page_visibility" } });
+    if (setting?.value) pageVisibility = JSON.parse(setting.value);
+  } catch {}
+
+  const visiblePages = NAV_PAGES.filter((p) => pageVisibility[p.key] !== false);
+
   if (!q) {
-    return json({ orders: [], query: q, selectedOrder, error: null, softrResults: [] });
+    return json({ orders: [], query: q, selectedOrder, error: null, softrResults: [], visiblePages });
   }
 
   // Run Shopify + Softr searches in parallel
@@ -121,7 +132,7 @@ export const loader = async ({ request }) => {
     console.error("Softr search failed:", softrResult.reason?.message);
   }
 
-  return json({ orders, query: q, selectedOrder, error, softrResults });
+  return json({ orders, query: q, selectedOrder, error, softrResults, visiblePages });
 };
 
 // ─── Badge maps ───
@@ -845,7 +856,7 @@ function SoftrResultsSection({ results, query, orderGid }) {
 // ─── Main page ───
 
 export default function OrderSearch() {
-  const { orders, query, selectedOrder, error, softrResults } = useLoaderData();
+  const { orders, query, selectedOrder, error, softrResults, visiblePages } = useLoaderData();
   const navigation = useNavigation();
   const shopify = useAppBridge();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -1091,6 +1102,39 @@ export default function OrderSearch() {
             autoComplete="off"
           />
         </Card>
+
+        {visiblePages?.length > 0 && (
+          <div style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(4, 1fr)",
+            gap: "12px",
+          }}>
+            {visiblePages.map((p) => (
+              <Link key={p.key} to={p.to} style={{ textDecoration: "none", color: "inherit" }}>
+                <div style={{
+                  padding: "16px",
+                  borderRadius: "12px",
+                  background: "var(--p-color-bg-surface)",
+                  border: "1px solid var(--p-color-border)",
+                  cursor: "pointer",
+                  textAlign: "center",
+                  transition: "background 0.15s ease, box-shadow 0.15s ease",
+                }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.background = "var(--p-color-bg-surface-hover)";
+                    e.currentTarget.style.boxShadow = "0 1px 3px rgba(0,0,0,0.1)";
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.background = "var(--p-color-bg-surface)";
+                    e.currentTarget.style.boxShadow = "none";
+                  }}
+                >
+                  <Text variant="bodyMd" fontWeight="semibold" as="span">{p.label}</Text>
+                </div>
+              </Link>
+            ))}
+          </div>
+        )}
 
         {(query || isPendingSearch || isNavigating) && (
           (isPendingSearch || isNavigating) ? (
