@@ -464,6 +464,8 @@ function OrderCard({ order, lines, shop, highlighted, readOnly }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [printing, setPrinting] = useState(false);
   const [archiving, setArchiving] = useState(false);
+  const [exiting, setExiting] = useState(false);
+  const [actionDone, setActionDone] = useState(null); // "print" | "archive" | null
   const cardRef = useRef(null);
 
   useEffect(() => {
@@ -476,6 +478,11 @@ function OrderCard({ order, lines, shop, highlighted, readOnly }) {
   const customerName = order["customer name"] || "—";
   const status = order.status || "—";
   const date = formatDate(order.created_at);
+
+  function triggerExit(label) {
+    setActionDone(label);
+    setTimeout(() => setExiting(true), 600);
+  }
 
   async function handlePrintAndSend() {
     setPrinting(true);
@@ -493,6 +500,7 @@ function OrderCard({ order, lines, shop, highlighted, readOnly }) {
       if (data.pdf_url) {
         window.open(data.pdf_url, "_blank");
       }
+      triggerExit("Verstuurd & geprint");
     } catch (e) {
       console.error("Print & verstuur failed:", e);
     } finally {
@@ -512,8 +520,9 @@ function OrderCard({ order, lines, shop, highlighted, readOnly }) {
         },
       );
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      triggerExit("Gemarkeerd voor bulk");
     } catch (e) {
-      console.error("Archiveer & verstuur failed:", e);
+      console.error("Verstuur & markeer voor bulk failed:", e);
     } finally {
       setArchiving(false);
     }
@@ -524,11 +533,35 @@ function OrderCard({ order, lines, shop, highlighted, readOnly }) {
       ref={cardRef}
       style={{
         borderRadius: "12px",
-        transition: "box-shadow 0.3s ease, outline 0.3s ease",
-        boxShadow: highlighted ? "0 0 0 3px rgba(192, 43, 43, 0.35)" : "none",
-        outline: highlighted ? "2px solid rgba(192, 43, 43, 0.6)" : "2px solid transparent",
+        transition: "box-shadow 0.3s ease, outline 0.3s ease, opacity 0.5s ease, transform 0.5s ease, max-height 0.5s ease",
+        boxShadow: highlighted
+          ? "0 0 0 3px rgba(192, 43, 43, 0.35)"
+          : actionDone
+            ? "0 0 0 3px rgba(52, 125, 84, 0.35)"
+            : "none",
+        outline: highlighted
+          ? "2px solid rgba(192, 43, 43, 0.6)"
+          : actionDone
+            ? "2px solid rgba(52, 125, 84, 0.6)"
+            : "2px solid transparent",
+        opacity: exiting ? 0 : 1,
+        transform: exiting ? "translateX(40px)" : "translateX(0)",
+        maxHeight: exiting ? "0px" : "2000px",
+        overflow: "hidden",
       }}
     >
+    {actionDone && (
+      <div style={{
+        background: "linear-gradient(90deg, rgba(52, 125, 84, 0.08), transparent)",
+        padding: "8px 16px",
+        borderRadius: "12px 12px 0 0",
+        display: "flex",
+        alignItems: "center",
+        gap: "8px",
+      }}>
+        <span style={{ color: "#347D54", fontWeight: 600, fontSize: "13px" }}>✓ {actionDone}</span>
+      </div>
+    )}
     <Card>
       <BlockStack gap="0">
         {/* Header */}
@@ -548,15 +581,17 @@ function OrderCard({ order, lines, shop, highlighted, readOnly }) {
             </InlineStack>
             <InlineStack gap="200" blockAlign="center">
               {readOnly ? (
-                <Button variant="primary" onClick={handlePrintAndSend} loading={printing}>
-                  Print
-                </Button>
+                order.pdf_url ? (
+                  <Button variant="primary" onClick={handlePrintAndSend} loading={printing}>
+                    Print
+                  </Button>
+                ) : null
               ) : (
                 <>
                   <Button variant="primary" tone="critical" onClick={handlePrintAndSend} loading={printing}>
                     Print &amp; verstuur
                   </Button>
-                  <Button onClick={handleArchiveAndSend} loading={archiving}>Archiveer &amp; verstuur</Button>
+                  <Button onClick={handleArchiveAndSend} loading={archiving}>Verstuur &amp; markeer voor bulk</Button>
                   <Popover
                     active={menuOpen}
                     onClose={() => setMenuOpen(false)}
@@ -688,54 +723,76 @@ export default function Orders() {
   }
 
   async function handleBulkPrint() {
-    const orderIds = orders.map((o) => String(o.id)).filter(Boolean);
-    if (orderIds.length === 0) return;
+    if (orders.length === 0) return;
     setBulkPrinting(true);
 
     try {
-      const total = orderIds.length;
-      const pdfUrls = [];
+      // Step 1: Collect PDF URLs directly from loaded order data (no webhook calls needed)
+      let pdfUrls = orders
+        .map((o) => o.pdf_url)
+        .filter(Boolean);
 
-      // Step 1: Fetch PDF URLs from webhook
-      for (let i = 0; i < orderIds.length; i++) {
-        setBulkProgress({ step: "fetch", current: i + 1, total });
-        try {
-          const res = await fetch(
-            "https://voordeelgordijnen.n8n.sition.cloud/webhook/377b0505-2c7c-4808-8643-eb74796f1449",
-            {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ orderId: orderIds[i] }),
-            },
-          );
-          if (!res.ok) continue;
-          const data = await res.json();
-          if (data.pdf_url) pdfUrls.push(data.pdf_url);
-        } catch (e) {
-          console.error("Failed to get PDF for order", orderIds[i], e);
+      // Fallback: if no pdf_urls in data, fetch from webhook (sequential, slower)
+      if (pdfUrls.length === 0) {
+        const orderIds = orders.map((o) => String(o.id)).filter(Boolean);
+        setBulkProgress({ step: "fetch", current: 0, total: orderIds.length });
+        for (let i = 0; i < orderIds.length; i++) {
+          setBulkProgress({ step: "fetch", current: i + 1, total: orderIds.length });
+          try {
+            const res = await fetch(
+              "https://voordeelgordijnen.n8n.sition.cloud/webhook/377b0505-2c7c-4808-8643-eb74796f1449",
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ orderId: orderIds[i] }),
+              },
+            );
+            if (!res.ok) continue;
+            const data = await res.json();
+            if (data.pdf_url) pdfUrls.push(data.pdf_url);
+          } catch (e) {
+            console.error("Failed to get PDF for order", orderIds[i], e);
+          }
         }
       }
 
-      // Step 2: Download and merge PDFs
+      // Step 2: Download PDFs in parallel batches and merge
       if (pdfUrls.length > 0) {
         setBulkProgress({ step: "download", current: 0, total: pdfUrls.length });
         const { PDFDocument } = await import("pdf-lib");
         const mergedPdf = await PDFDocument.create();
 
-        for (let i = 0; i < pdfUrls.length; i++) {
-          setBulkProgress({ step: "download", current: i + 1, total: pdfUrls.length });
+        // Download in parallel batches of 6
+        const BATCH = 6;
+        const pdfBuffers = new Array(pdfUrls.length);
+        for (let i = 0; i < pdfUrls.length; i += BATCH) {
+          const batch = pdfUrls.slice(i, i + BATCH);
+          const results = await Promise.allSettled(
+            batch.map((url) => fetch(url).then((r) => r.arrayBuffer())),
+          );
+          results.forEach((result, j) => {
+            if (result.status === "fulfilled") {
+              pdfBuffers[i + j] = result.value;
+            } else {
+              console.error("Failed to load PDF:", pdfUrls[i + j], result.reason);
+            }
+          });
+          setBulkProgress({ step: "download", current: Math.min(i + BATCH, pdfUrls.length), total: pdfUrls.length });
+        }
+
+        // Merge all downloaded PDFs
+        setBulkProgress({ step: "merge", current: 0, total: 0 });
+        for (const bytes of pdfBuffers) {
+          if (!bytes) continue;
           try {
-            const pdfRes = await fetch(pdfUrls[i]);
-            const pdfBytes = await pdfRes.arrayBuffer();
-            const doc = await PDFDocument.load(pdfBytes);
+            const doc = await PDFDocument.load(bytes);
             const pages = await mergedPdf.copyPages(doc, doc.getPageIndices());
             pages.forEach((p) => mergedPdf.addPage(p));
           } catch (e) {
-            console.error("Failed to load PDF:", pdfUrls[i], e);
+            console.error("Failed to parse PDF:", e);
           }
         }
 
-        setBulkProgress({ step: "merge", current: 0, total: 0 });
         const mergedBytes = await mergedPdf.save();
         const blob = new Blob([mergedBytes], { type: "application/pdf" });
         const url = URL.createObjectURL(blob);
@@ -810,6 +867,15 @@ export default function Orders() {
   return (
     <Page fullWidth title="Webattelier">
       <TitleBar title="Webattelier" />
+      <style>{`
+        @keyframes cardSlideIn {
+          from { opacity: 0; transform: translateY(8px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+        .order-card-enter {
+          animation: cardSlideIn 0.3s ease both;
+        }
+      `}</style>
       <BlockStack gap="400">
         {/* Top bar: search + status */}
         <InlineStack align="space-between" blockAlign="center">
@@ -930,7 +996,11 @@ export default function Orders() {
                 const lines = orderId ? linesByOrder[orderId] || [] : [];
                 const highlighted = orderId ? changedIds.has(orderId) : false;
                 const isReadOnly = status === "done" || status === "ready for print";
-                return <OrderCard key={orderId ?? i} order={order} lines={lines} shop={shop} highlighted={highlighted} readOnly={isReadOnly} />;
+                return (
+                  <div key={orderId ?? i} className="order-card-enter" style={{ animationDelay: `${Math.min(i * 30, 300)}ms` }}>
+                    <OrderCard order={order} lines={lines} shop={shop} highlighted={highlighted} readOnly={isReadOnly} />
+                  </div>
+                );
               })}
             </BlockStack>
           )}

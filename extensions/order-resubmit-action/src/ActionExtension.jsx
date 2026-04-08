@@ -131,27 +131,22 @@ export default extension("admin.order-details.action.render", async (root, api) 
       title: `Bied opnieuw aan — ${order.name}`,
     });
 
-    const container = root.createComponent("BlockStack", { gap: "large" });
-
-    // Summary banner
-    const summaryText = `${lineItems.length} item${lineItems.length !== 1 ? "s" : ""} — Totaal: ${formatTotal()} ${lineItems[0]?.currency || "EUR"}`;
-    container.appendChild(
-      root.createComponent("Banner", { tone: "info" }, summaryText),
-    );
+    const container = root.createComponent("BlockStack", { gap: "base" });
 
     if (lineItems.length === 0) {
       container.appendChild(
         root.createComponent(
           "Banner",
           { tone: "warning" },
-          "Alle line items zijn verwijderd. Voeg items toe of annuleer.",
+          "Alle line items zijn verwijderd.",
         ),
       );
     }
 
     // Line items
-    for (const item of lineItems) {
-      container.appendChild(renderLineItem(item));
+    for (let idx = 0; idx < lineItems.length; idx++) {
+      if (idx > 0) container.appendChild(root.createComponent("Divider", {}));
+      container.appendChild(renderLineItem(lineItems[idx]));
     }
 
     // Action buttons at the bottom
@@ -182,130 +177,96 @@ export default extension("admin.order-details.action.render", async (root, api) 
     action.appendChild(container);
   }
 
-  function formatTotal() {
-    const total = lineItems.reduce(
-      (sum, item) => sum + parseFloat(item.price || 0) * item.quantity,
-      0,
-    );
-    return total.toFixed(2);
-  }
-
-  // ── Single line item card ──
+  // ── Single line item row ──
   function renderLineItem(item) {
-    const section = root.createComponent("Section", {
-      heading: item.title,
-    });
-    const stack = root.createComponent("BlockStack", { gap: "base" });
+    const wrapper = root.createComponent("BlockStack", { gap: "tight", padding: "base" });
 
-    // Variant + SKU + Price summary line
-    const metaLine = [
-      item.variantTitle,
-      item.sku && `SKU: ${item.sku}`,
-      `€${item.price}`,
-    ]
-      .filter(Boolean)
-      .join("  ·  ");
-
-    stack.appendChild(root.createComponent("Text", { tone: "subdued" }, metaLine));
-
-    // Quantity row
-    const qtyRow = root.createComponent("InlineStack", {
+    // Row 1: Title ... price × qty   total   [X]
+    const topRow = root.createComponent("InlineStack", {
       gap: "base",
       blockAlignment: "center",
       inlineAlignment: "space-between",
     });
 
-    qtyRow.appendChild(
-      root.createComponent("NumberField", {
-        label: "Aantal",
-        value: item.quantity,
-        min: 1,
-        onChange: (val) => {
-          item.quantity = Math.max(1, val);
-        },
-      }),
+    topRow.appendChild(
+      root.createComponent("Text", { fontWeight: "bold" }, item.title),
     );
 
-    qtyRow.appendChild(
+    const rightSide = root.createComponent("InlineStack", {
+      gap: "tight",
+      blockAlignment: "center",
+    });
+
+    const lineTotal = (parseFloat(item.price || 0) * item.quantity).toFixed(2);
+    rightSide.appendChild(
+      root.createComponent("Text", { tone: "subdued" }, `€${item.price}`),
+    );
+    rightSide.appendChild(
+      root.createComponent("Text", { tone: "subdued" }, "×"),
+    );
+    rightSide.appendChild(
+      root.createComponent("NumberField", {
+        label: "Aantal",
+        labelAccessibilityVisibility: "exclusive",
+        value: item.quantity,
+        min: 1,
+        onChange: (val) => { item.quantity = Math.max(1, val); },
+      }),
+    );
+    rightSide.appendChild(
+      root.createComponent("Text", {}, `€${lineTotal}`),
+    );
+    rightSide.appendChild(
       root.createComponent(
         "Button",
         {
           tone: "critical",
           variant: "tertiary",
+          icon: "delete",
+          accessibilityLabel: "Verwijder",
           onPress: () => {
             lineItems = lineItems.filter((li) => li._key !== item._key);
             renderUI();
           },
         },
-        "Verwijder item",
       ),
     );
 
-    stack.appendChild(qtyRow);
+    topRow.appendChild(rightSide);
+    wrapper.appendChild(topRow);
 
-    // Properties
-    if (item.properties.length > 0) {
-      stack.appendChild(root.createComponent("Divider", {}));
-
-      const propsHeadRow = root.createComponent("InlineStack", {
-        gap: "base",
-        blockAlignment: "center",
-        inlineAlignment: "space-between",
-      });
-      propsHeadRow.appendChild(
-        root.createComponent("Text", { fontWeight: "bold" }, "Eigenschappen"),
-      );
-      propsHeadRow.appendChild(
-        root.createComponent(
-          "Button",
-          {
-            variant: "tertiary",
-            onPress: () => renderEditProperties(item),
-          },
-          "Bewerken",
-        ),
-      );
-      stack.appendChild(propsHeadRow);
-
-      const propsGrid = root.createComponent("BlockStack", { gap: "extraTight" });
-      for (const prop of item.properties) {
-        if (!prop.key) continue;
-        const propRow = root.createComponent("InlineStack", {
-          gap: "tight",
-          blockAlignment: "center",
-        });
+    // Row 2: Properties as subdued key: value lines + edit button
+    const visibleProps = (item.properties || []).filter((p) => p.key);
+    if (visibleProps.length > 0) {
+      const propsBlock = root.createComponent("BlockStack", { gap: "extraTight" });
+      for (const prop of visibleProps) {
+        const propRow = root.createComponent("InlineStack", { gap: "tight" });
         propRow.appendChild(
-          root.createComponent("Text", { fontWeight: "bold" }, `${prop.key}:`),
+          root.createComponent("Text", { tone: "subdued" }, `${prop.key}: ${prop.value}`),
         );
-        propRow.appendChild(root.createComponent("Text", {}, prop.value));
-        propsGrid.appendChild(propRow);
+        propsBlock.appendChild(propRow);
       }
-      stack.appendChild(propsGrid);
-    } else {
-      stack.appendChild(root.createComponent("Divider", {}));
-      const noPropsRow = root.createComponent("InlineStack", {
-        gap: "base",
-        blockAlignment: "center",
-        inlineAlignment: "space-between",
+
+      const editRow = root.createComponent("InlineStack", {
+        inlineAlignment: "end",
       });
-      noPropsRow.appendChild(
-        root.createComponent("Text", { tone: "subdued" }, "Geen eigenschappen"),
-      );
-      noPropsRow.appendChild(
+      editRow.appendChild(
         root.createComponent(
           "Button",
           {
             variant: "tertiary",
+            icon: "edit",
+            accessibilityLabel: "Bewerk eigenschappen",
             onPress: () => renderEditProperties(item),
           },
-          "+ Toevoegen",
         ),
       );
-      stack.appendChild(noPropsRow);
+
+      wrapper.appendChild(propsBlock);
+      wrapper.appendChild(editRow);
     }
 
-    section.appendChild(stack);
-    return section;
+    return wrapper;
   }
 
   // ── Edit properties view ──
