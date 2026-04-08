@@ -1,6 +1,6 @@
 import { json } from "@remix-run/node";
 import { useLoaderData, useFetcher } from "@remix-run/react";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import {
   Page,
   Card,
@@ -11,9 +11,12 @@ import {
   TextField,
   Banner,
   Button,
+  InlineStack,
+  Checkbox,
 } from "@shopify/polaris";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
+import { NAV_PAGES } from "./app";
 
 const DEFAULT_WEBHOOK =
   "https://voordeelgordijnen.n8n.sition.cloud/webhook/b16cf368-ecf4-414a-89bb-f5387ca2ffd0";
@@ -22,14 +25,18 @@ export const loader = async ({ request }) => {
   await authenticate.admin(request);
 
   let resubmitWebhookUrl = "";
+  let pageVisibility = {};
   try {
-    const setting = await prisma.setting.findUnique({
-      where: { key: "resubmit_webhook_url" },
+    const settings = await prisma.setting.findMany({
+      where: { key: { in: ["resubmit_webhook_url", "page_visibility"] } },
     });
-    resubmitWebhookUrl = setting?.value || "";
+    for (const s of settings) {
+      if (s.key === "resubmit_webhook_url") resubmitWebhookUrl = s.value || "";
+      if (s.key === "page_visibility") pageVisibility = JSON.parse(s.value || "{}");
+    }
   } catch {}
 
-  return json({ resubmitWebhookUrl });
+  return json({ resubmitWebhookUrl, pageVisibility });
 };
 
 export const action = async ({ request }) => {
@@ -38,11 +45,11 @@ export const action = async ({ request }) => {
   const key = formData.get("key");
   const value = formData.get("value");
 
-  if (key === "resubmit_webhook_url") {
+  if (key === "resubmit_webhook_url" || key === "page_visibility") {
     await prisma.setting.upsert({
-      where: { key: "resubmit_webhook_url" },
+      where: { key },
       update: { value: value || "" },
-      create: { key: "resubmit_webhook_url", value: value || "" },
+      create: { key, value: value || "" },
     });
   }
 
@@ -50,12 +57,13 @@ export const action = async ({ request }) => {
 };
 
 export default function Settings() {
-  const { resubmitWebhookUrl } = useLoaderData();
+  const { resubmitWebhookUrl, pageVisibility } = useLoaderData();
   const fetcher = useFetcher();
 
   const [selectedTab, setSelectedTab] = useState(0);
   const [printMode, setPrintMode] = useState("n8n");
   const [webhookInput, setWebhookInput] = useState(resubmitWebhookUrl);
+  const [visibility, setVisibility] = useState(pageVisibility);
   const [saved, setSaved] = useState(false);
 
   useEffect(() => {
@@ -79,7 +87,23 @@ export default function Settings() {
     setTimeout(() => setSaved(false), 2000);
   };
 
+  const handleTogglePage = useCallback((pageKey) => {
+    setVisibility((prev) => {
+      const updated = { ...prev, [pageKey]: prev[pageKey] === false ? true : false };
+      // Remove keys that are true (default) to keep it clean
+      if (updated[pageKey] === true) delete updated[pageKey];
+      fetcher.submit(
+        { key: "page_visibility", value: JSON.stringify(updated) },
+        { method: "POST" },
+      );
+      return updated;
+    });
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  }, [fetcher]);
+
   const tabs = [
+    { id: "pages", content: "Pagina's" },
     { id: "kleurstalen", content: "Kleurstalen" },
     { id: "resubmit", content: "Bied opnieuw aan" },
   ];
@@ -96,6 +120,27 @@ export default function Settings() {
         )}
 
         {selectedTab === 0 && (
+          <Card>
+            <BlockStack gap="400">
+              <Text variant="headingMd" as="h2">
+                Pagina zichtbaarheid
+              </Text>
+              <Text variant="bodySm" as="p" tone="subdued">
+                Schakel pagina's in of uit in de navigatie.
+              </Text>
+              {NAV_PAGES.map((page) => (
+                <Checkbox
+                  key={page.key}
+                  label={page.label}
+                  checked={visibility[page.key] !== false}
+                  onChange={() => handleTogglePage(page.key)}
+                />
+              ))}
+            </BlockStack>
+          </Card>
+        )}
+
+        {selectedTab === 1 && (
           <Card>
             <BlockStack gap="400">
               <Text variant="headingMd" as="h2">
@@ -119,7 +164,7 @@ export default function Settings() {
           </Card>
         )}
 
-        {selectedTab === 1 && (
+        {selectedTab === 2 && (
           <Card>
             <BlockStack gap="400">
               <Text variant="headingMd" as="h2">

@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import {
   useLoaderData,
   useNavigation,
-  useRevalidator,
   useSearchParams,
   useFetcher,
 } from "@remix-run/react";
@@ -18,7 +17,6 @@ import {
   BlockStack,
   EmptyState,
   Banner,
-  Pagination,
   SkeletonBodyText,
   Divider,
   Box,
@@ -26,11 +24,9 @@ import {
 } from "@shopify/polaris";
 import { TitleBar } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
-import { getExecutions, getWorkflows } from "../n8n.server";
+import { getWorkflows } from "../n8n.server";
 import { syncExecutions } from "../n8n-sync.server";
 import prisma from "../db.server";
-
-const PAGE_SIZE = 10;
 
 export const loader = async ({ request }) => {
   await authenticate.admin(request);
@@ -38,7 +34,6 @@ export const loader = async ({ request }) => {
   const url = new URL(request.url);
   const status = url.searchParams.get("status") || "";
   const workflowId = url.searchParams.get("workflowId") || "";
-  const cursor = url.searchParams.get("cursor") || "";
 
   let workflows = [];
   let error = null;
@@ -47,46 +42,30 @@ export const loader = async ({ request }) => {
     workflows = (await getWorkflows().catch(() => ({ data: [] }))).data ?? [];
   } catch {}
 
-  // Keep local DB in sync (fire-and-forget)
+  // Keep local DB in sync (fire-and-forget, throttled to 1 min)
   syncExecutions().catch(() => {});
 
-  // Lean fetch — no includeData, just metadata
+  // Serve entirely from local DB (max 10 rows)
   try {
-    const response = await getExecutions({
-      status: status || undefined,
-      workflowId: workflowId || undefined,
-      cursor: cursor || undefined,
-      limit: PAGE_SIZE,
+    const where = {};
+    if (status) where.status = status;
+    if (workflowId) where.workflowId = workflowId;
+
+    const executions = await prisma.executionOrder.findMany({
+      where,
+      orderBy: { startedAt: "desc" },
     });
 
-    const executionsList = response.data ?? [];
-    const nextCursor = response.nextCursor ?? null;
-
-    // Look up orderNumbers from local DB instead of parsing execution data
-    const executionIds = executionsList.map((e) => String(e.id));
-    const dbRecords = executionIds.length > 0
-      ? await prisma.executionOrder.findMany({
-          where: { executionId: { in: executionIds } },
-          select: { executionId: true, orderNumber: true },
-        })
-      : [];
-    const orderNumberMap = Object.fromEntries(
-      dbRecords.map((r) => [r.executionId, r.orderNumber]),
-    );
-
-    const executions = executionsList.map((exec) => ({
-      id: exec.id,
-      workflowId: exec.workflowId,
-      status: exec.status,
-      startedAt: exec.startedAt,
-      stoppedAt: exec.stoppedAt,
-      mode: exec.mode,
-      orderNumber: orderNumberMap[String(exec.id)] ?? null,
-    }));
-
     return json({
-      executions,
-      nextCursor,
+      executions: executions.map((e) => ({
+        id: e.executionId,
+        workflowId: e.workflowId,
+        status: e.status,
+        startedAt: e.startedAt?.toISOString() ?? null,
+        stoppedAt: e.stoppedAt?.toISOString() ?? null,
+        mode: e.mode,
+        orderNumber: e.orderNumber,
+      })),
       workflows,
       filters: { status, workflowId },
       error: null,
@@ -95,7 +74,6 @@ export const loader = async ({ request }) => {
     console.error("Failed to load executions:", e.message);
     return json({
       executions: [],
-      nextCursor: null,
       workflows,
       filters: { status, workflowId },
       error: e.message,
@@ -495,23 +473,20 @@ function OrderOverview({ execution, executionNodes, nodesLoading, relatedExecuti
 }
 
 export default function Executions() {
-  const { executions, nextCursor, workflows, filters, error } =
+  const { executions, workflows, filters, error } =
     useLoaderData();
   const navigation = useNavigation();
-  const revalidator = useRevalidator();
   const [searchParams, setSearchParams] = useSearchParams();
   const detailFetcher = useFetcher();
 
-  const isNavigating = navigation.state === "loading";
-  const isLoading = isNavigating && !revalidator.state;
+  const isLoading = navigation.state === "loading";
 
   const [selectedExecution, setSelectedExecution] = useState(null);
 
-  // Clear selection when filters or page change (not on auto-refresh)
-  const cursorParam = searchParams.get("cursor") || "";
+  // Clear selection when filters change
   useEffect(() => {
     setSelectedExecution(null);
-  }, [filters.status, filters.workflowId, cursorParam]);
+  }, [filters.status, filters.workflowId]);
 
 
   const workflowOptions = [
@@ -541,25 +516,11 @@ export default function Executions() {
         params.delete(key);
       }
     }
-    params.delete("cursor");
     setSearchParams(params);
   }
 
   function handleFilterChange(key, value) {
     updateParams({ [key]: value });
-  }
-
-  function handleNextPage() {
-    if (!nextCursor) return;
-    const params = new URLSearchParams(searchParams);
-    params.set("cursor", nextCursor);
-    setSearchParams(params);
-  }
-
-  function handlePreviousPage() {
-    const params = new URLSearchParams(searchParams);
-    params.delete("cursor");
-    setSearchParams(params);
   }
 
   function handleSelectExecution(execution) {
@@ -581,7 +542,6 @@ export default function Executions() {
   // Show nodes only when data matches the selected execution (avoid stale data flash)
   const executionNodes =
     !detailLoading && detailFetcher.data?.nodes ? detailFetcher.data.nodes : [];
-  const hasCursor = searchParams.has("cursor");
 
   // Related executions from the current page sharing the same order number
   const relatedExecutions = selectedExecution?.orderNumber
@@ -695,16 +655,6 @@ export default function Executions() {
               )}
             </Card>
 
-            {!isLoading && (nextCursor || hasCursor) && (
-              <InlineStack align="center">
-                <Pagination
-                  hasPrevious={hasCursor}
-                  hasNext={!!nextCursor}
-                  onPrevious={handlePreviousPage}
-                  onNext={handleNextPage}
-                />
-              </InlineStack>
-            )}
           </BlockStack>
 
           <div style={{ position: "sticky", top: "60px" }}>
