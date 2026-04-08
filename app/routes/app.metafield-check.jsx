@@ -44,7 +44,7 @@ export const loader = async ({ request }) => {
   const after = url.searchParams.get("after") || null;
   const search = url.searchParams.get("q") || "";
 
-  let query = "-metafield:custom.n8n_workflow_url:*";
+  let query = "-metafields.custom.n8n_workflow_url:*";
   if (search) {
     query = `${search} ${query}`;
   }
