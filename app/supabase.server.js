@@ -25,7 +25,12 @@ export async function queryTable(table, { from = 0, to = 49, sortBy = "id", sort
     .range(from, to);
 
   if (status) {
-    query = query.ilike("status", status);
+    const statuses = status.split(",").map((s) => s.trim());
+    if (statuses.length === 1) {
+      query = query.ilike("status", statuses[0]);
+    } else {
+      query = query.or(statuses.map((s) => `status.ilike.${s}`).join(","));
+    }
   }
 
   const { data, error, count } = await query;
@@ -218,6 +223,50 @@ export async function queryGrandHome({ from = 0, to = 49, search = "" } = {}) {
   return { data: data ?? [], count };
 }
 
+export async function queryHkl({ from = 0, to = 49, search = "" } = {}) {
+  let query = supabase
+    .from("hkl")
+    .select("*", { count: "exact" })
+    .order("created_at", { ascending: false })
+    .range(from, to);
+
+  if (search.trim()) {
+    query = query.ilike("ordernumber", `%${search.trim()}%`);
+  }
+
+  const { data, error, count } = await query;
+  if (error) throw error;
+  return { data: data ?? [], count };
+}
+
+export async function queryLinesForMonth(year, month) {
+  const startDate = `${year}-${String(month).padStart(2, "0")}-01T00:00:00`;
+  const endMonth = month === 12 ? 1 : month + 1;
+  const endYear = month === 12 ? year + 1 : year;
+  const endDate = `${endYear}-${String(endMonth).padStart(2, "0")}-01T00:00:00`;
+
+  const allData = [];
+  let from = 0;
+  const batchSize = 1000;
+
+  while (true) {
+    const { data, error } = await supabase
+      .from("Webattelier - lines")
+      .select("customer_reference, productTitle, cutSizeLeftInMm, cutSizeRightInMm, quantity, finishedHeightInMm, panelsLeft, panelsRight, productGroupCode, plooiFactor, finishedWidthLeftInMm, finishedWidthRightInMm, created_at")
+      .gte("created_at", startDate)
+      .lt("created_at", endDate)
+      .range(from, from + batchSize - 1);
+
+    if (error) throw error;
+    if (!data || data.length === 0) break;
+    allData.push(...data);
+    if (data.length < batchSize) break;
+    from += batchSize;
+  }
+
+  return allData;
+}
+
 export async function searchOrders(search, { from = 0, to = 49, sortBy = "id", sortDir = "desc", status = "" } = {}) {
   const isNumeric = /^\d+$/.test(search.trim());
   const filters = [`customer name.ilike.%${search}%`];
@@ -233,7 +282,12 @@ export async function searchOrders(search, { from = 0, to = 49, sortBy = "id", s
     .range(from, to);
 
   if (status) {
-    query = query.ilike("status", status);
+    const statuses = status.split(",").map((s) => s.trim());
+    if (statuses.length === 1) {
+      query = query.ilike("status", statuses[0]);
+    } else {
+      query = query.or(statuses.map((s) => `status.ilike.${s}`).join(","));
+    }
   }
 
   const { data, error, count } = await query;

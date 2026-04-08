@@ -3,7 +3,7 @@ import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 
 const DEFAULT_WEBHOOK =
-  "https://voordeelgordijnen.n8n.sition.cloud/webhook/252b1295-0a82-4ce5-bfdc-8c66501fef9b";
+  "https://voordeelgordijnen.n8n.sition.cloud/webhook/b16cf368-ecf4-414a-89bb-f5387ca2ffd0";
 
 const ORDER_QUERY = `
   query Order($id: ID!) {

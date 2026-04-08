@@ -26,9 +26,12 @@ export default function App() {
         <Link to="/app/kleurstalen">Kleurstalen</Link>
         <Link to="/app/nedistri">NE Distri</Link>
         <Link to="/app/grandhome">Grand Home</Link>
+        <Link to="/app/hkl">HKL</Link>
         <Link to="/app/sync-checks">Sync Checks</Link>
         <Link to="/app/executions">Executions</Link>
         <Link to="/app/softr">Softr</Link>
+        <Link to="/app/fabric-usage">Stofverbruik</Link>
+        <Link to="/app/metafield-check">Metafield Check</Link>
         <Link to="/app/settings">Instellingen</Link>
       </NavMenu>
       <Outlet />

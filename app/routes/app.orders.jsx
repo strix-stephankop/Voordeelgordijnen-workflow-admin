@@ -497,10 +497,10 @@ function OrderCard({ order, lines, shop, highlighted, readOnly }) {
       );
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      if (data.pdf_url) {
-        window.open(data.pdf_url, "_blank");
-      }
       triggerExit("Verstuurd & geprint");
+      if (data.pdf_url) {
+        setTimeout(() => window.open(data.pdf_url, "_blank"), 800);
+      }
     } catch (e) {
       console.error("Print & verstuur failed:", e);
     } finally {
@@ -583,13 +583,13 @@ function OrderCard({ order, lines, shop, highlighted, readOnly }) {
               {readOnly ? (
                 order.pdf_url ? (
                   <Button variant="primary" onClick={handlePrintAndSend} loading={printing}>
-                    Print
+                    {printing ? "PDF aanmaken..." : "Print"}
                   </Button>
                 ) : null
               ) : (
                 <>
                   <Button variant="primary" tone="critical" onClick={handlePrintAndSend} loading={printing}>
-                    Print &amp; verstuur
+                    {printing ? "PDF aanmaken..." : "Print & verstuur"}
                   </Button>
                   <Button onClick={handleArchiveAndSend} loading={archiving}>Verstuur &amp; markeer voor bulk</Button>
                   <Popover
@@ -706,7 +706,7 @@ export default function Orders() {
 
   const STATUS_TABS = [
     { id: "all", content: "Alle", filter: "" },
-    { id: "open", content: "Open", filter: "open" },
+    { id: "open", content: "Open", filter: "open,Creating pdf" },
     { id: "ready-for-print", content: "Ready for print", filter: "ready for print" },
     { id: "done", content: "Done", filter: "done" },
     { id: "deleted", content: "Deleted", filter: "deleted" },

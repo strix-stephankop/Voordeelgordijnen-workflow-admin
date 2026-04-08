@@ -54,11 +54,12 @@ const ORDER_QUERY = `
 `;
 
 const WEBHOOK_URL =
-  "https://voordeelgordijnen.n8n.sition.cloud/webhook/252b1295-0a82-4ce5-bfdc-8c66501fef9b";
+  "https://voordeelgordijnen.n8n.sition.cloud/webhook/b16cf368-ecf4-414a-89bb-f5387ca2ffd0";
 
 export default extension("admin.order-details.action.render", async (root, api) => {
   const close = api.close || (() => {});
   const orderId = shopify.data?.selected?.[0]?.id || api.data?.selected?.[0]?.id;
+  const expandedProps = new Set(); // track which items have properties expanded
 
   const action = root.createComponent("AdminAction", {
     title: "Bied opnieuw aan",
@@ -180,15 +181,17 @@ export default extension("admin.order-details.action.render", async (root, api) 
   // ── Single line item row ──
   function renderLineItem(item) {
     const wrapper = root.createComponent("BlockStack", { gap: "tight" });
+    const visibleProps = (item.properties || []).filter((p) => p.key);
+    const isExpanded = expandedProps.has(item._key);
 
-    // Header: Title + Remove button
+    // Header: Bold title + Remove button
     const headerRow = root.createComponent("InlineStack", {
       gap: "base",
       blockAlignment: "center",
       inlineAlignment: "space-between",
     });
     headerRow.appendChild(
-      root.createComponent("Text", { fontWeight: "bold" }, item.title),
+      root.createComponent("Heading", { size: 6 }, item.title),
     );
     headerRow.appendChild(
       root.createComponent(
@@ -198,6 +201,7 @@ export default extension("admin.order-details.action.render", async (root, api) 
           variant: "tertiary",
           onPress: () => {
             lineItems = lineItems.filter((li) => li._key !== item._key);
+            expandedProps.delete(item._key);
             renderUI();
           },
         },
@@ -216,36 +220,72 @@ export default extension("admin.order-details.action.render", async (root, api) 
       );
     }
 
-    // Properties
-    const visibleProps = (item.properties || []).filter((p) => p.key);
+    // Properties toggle
     if (visibleProps.length > 0) {
-      const propsBlock = root.createComponent("BlockStack", { gap: "extraTight" });
-      for (const prop of visibleProps) {
-        propsBlock.appendChild(
-          root.createComponent("Text", { tone: "subdued" }, `${prop.key}: ${prop.value}`),
-        );
-      }
-      wrapper.appendChild(propsBlock);
-    }
+      const toggleRow = root.createComponent("InlineStack", {
+        gap: "tight",
+        blockAlignment: "center",
+      });
+      toggleRow.appendChild(
+        root.createComponent(
+          "Button",
+          {
+            variant: "tertiary",
+            onPress: () => {
+              if (expandedProps.has(item._key)) {
+                expandedProps.delete(item._key);
+              } else {
+                expandedProps.add(item._key);
+              }
+              renderUI();
+            },
+          },
+          `${isExpanded ? "▾" : "▸"} Eigenschappen (${visibleProps.length})`,
+        ),
+      );
+      toggleRow.appendChild(
+        root.createComponent(
+          "Button",
+          {
+            variant: "tertiary",
+            onPress: () => renderEditProperties(item),
+          },
+          "Bewerken",
+        ),
+      );
+      wrapper.appendChild(toggleRow);
 
-    // Action buttons: Edit properties
-    const actionsRow = root.createComponent("InlineStack", {
-      gap: "base",
-      blockAlignment: "center",
-    });
-    actionsRow.appendChild(
-      root.createComponent(
-        "Button",
-        {
-          variant: "tertiary",
-          onPress: () => renderEditProperties(item),
-        },
-        visibleProps.length > 0
-          ? `Bewerk eigenschappen (${visibleProps.length})`
-          : "+ Eigenschappen toevoegen",
-      ),
-    );
-    wrapper.appendChild(actionsRow);
+      // Expanded properties list
+      if (isExpanded) {
+        const propsBlock = root.createComponent("Box", {
+          paddingInlineStart: "base",
+        });
+        const propsList = root.createComponent("BlockStack", { gap: "extraTight" });
+        for (const prop of visibleProps) {
+          const propRow = root.createComponent("InlineStack", { gap: "tight" });
+          propRow.appendChild(
+            root.createComponent("Text", { tone: "subdued" }, `${prop.key}:`),
+          );
+          propRow.appendChild(
+            root.createComponent("Text", {}, prop.value),
+          );
+          propsList.appendChild(propRow);
+        }
+        propsBlock.appendChild(propsList);
+        wrapper.appendChild(propsBlock);
+      }
+    } else {
+      wrapper.appendChild(
+        root.createComponent(
+          "Button",
+          {
+            variant: "tertiary",
+            onPress: () => renderEditProperties(item),
+          },
+          "+ Eigenschappen toevoegen",
+        ),
+      );
+    }
 
     return wrapper;
   }
@@ -408,13 +448,32 @@ export default extension("admin.order-details.action.render", async (root, api) 
       })),
     };
 
-    fetch(WEBHOOK_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    })
-      .then((res) => {
+    // Send via app backend — fetch() in admin extensions auto-resolves relative URLs
+    // to app_url and adds Authorization header automatically
+    (async () => {
+      try {
+        const res = await fetch("/app/resubmit-order", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          throw new Error(body.error || `Error ${res.status}`);
+        }
+        return res;
+      } catch (fetchErr) {
+        // Fallback: if fetch to app backend fails, try direct webhook call
+        const res = await fetch(WEBHOOK_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
         if (!res.ok) throw new Error(`Webhook error: ${res.status}`);
+        return res;
+      }
+    })()
+      .then(() => {
         action.replaceChildren();
         action.updateProps({
           title: `Verzonden — ${order.name}`,
