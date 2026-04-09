@@ -372,6 +372,32 @@ async function generateDateRangePdf(orders, dateFrom, dateTo) {
   URL.revokeObjectURL(url);
 }
 
+async function generateDateRangeExcel(orders, dateFrom, dateTo) {
+  const XLSX = await import("xlsx");
+
+  const rows = orders.map((order, i) => ({
+    "#": i + 1,
+    Ordernummer: order.ordernumber || "---",
+    Datum: formatDateShort(order.created_at),
+  }));
+
+  const ws = XLSX.utils.json_to_sheet(rows);
+  ws["!cols"] = [{ wch: 6 }, { wch: 25 }, { wch: 15 }];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "HKL Orders");
+
+  const bytes = XLSX.write(wb, { type: "array", bookType: "xlsx" });
+  const blob = new Blob([bytes], {
+    type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `hkl-${dateFrom}-${dateTo}.xlsx`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 function ExportModal({ open, onClose, supabaseUrl, supabaseKey }) {
   const today = new Date().toISOString().split("T")[0];
   const [dateFrom, setDateFrom] = useState(today);
@@ -380,7 +406,7 @@ function ExportModal({ open, onClose, supabaseUrl, supabaseKey }) {
   const [exportError, setExportError] = useState(null);
   const [preview, setPreview] = useState(null);
 
-  async function handleExport() {
+  async function handleExport(format = "pdf") {
     setLoading(true);
     setExportError(null);
     try {
@@ -390,7 +416,11 @@ function ExportModal({ open, onClose, supabaseUrl, supabaseKey }) {
         setLoading(false);
         return;
       }
-      await generateDateRangePdf(orders, dateFrom, dateTo);
+      if (format === "excel") {
+        await generateDateRangeExcel(orders, dateFrom, dateTo);
+      } else {
+        await generateDateRangePdf(orders, dateFrom, dateTo);
+      }
       onClose();
     } catch (e) {
       setExportError(e.message);
@@ -417,13 +447,18 @@ function ExportModal({ open, onClose, supabaseUrl, supabaseKey }) {
     <Modal
       open={open}
       onClose={onClose}
-      title="Exporteer orders als PDF"
+      title="Exporteer orders"
       primaryAction={{
         content: loading ? "Bezig..." : "Download PDF",
-        onAction: handleExport,
+        onAction: () => handleExport("pdf"),
         disabled: loading,
       }}
       secondaryActions={[
+        {
+          content: "Download Excel",
+          onAction: () => handleExport("excel"),
+          disabled: loading,
+        },
         {
           content: "Voorbeeld",
           onAction: handlePreview,
@@ -434,7 +469,7 @@ function ExportModal({ open, onClose, supabaseUrl, supabaseKey }) {
       <Modal.Section>
         <BlockStack gap="400">
           <Text as="p" tone="subdued">
-            Selecteer een periode om een PDF rapport te genereren van alle HKL orders.
+            Selecteer een periode om een rapport te genereren van alle HKL orders.
           </Text>
           <InlineStack gap="300" blockAlign="end">
             <Box minWidth="200px">

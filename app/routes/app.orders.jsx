@@ -38,7 +38,7 @@ export const loader = async ({ request }) => {
   const search = url.searchParams.get("q") || "";
   const sortBy = url.searchParams.get("sort") || "id";
   const sortDir = url.searchParams.get("dir") || "desc";
-  const status = url.searchParams.get("status") ?? "open";
+  const status = url.searchParams.get("status") ?? "open,Creating pdf";
   const from = (page - 1) * PAGE_SIZE;
   const to = from + PAGE_SIZE - 1;
 
@@ -460,7 +460,7 @@ function OrderLine({ line }) {
 
 /* ── Order Card ── */
 
-function OrderCard({ order, lines, shop, highlighted, readOnly }) {
+function OrderCard({ order, lines, shop, highlighted, readOnly, supabaseUrl, supabaseKey }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [printing, setPrinting] = useState(false);
   const [archiving, setArchiving] = useState(false);
@@ -496,13 +496,28 @@ function OrderCard({ order, lines, shop, highlighted, readOnly }) {
         },
       );
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      triggerExit("Verstuurd & geprint");
-      if (data.pdf_url) {
-        setTimeout(() => window.open(data.pdf_url, "_blank"), 800);
-      }
+      triggerExit("Verstuurd");
     } catch (e) {
       console.error("Print & verstuur failed:", e);
+    } finally {
+      setPrinting(false);
+    }
+  }
+
+  async function handlePrintReady() {
+    setPrinting(true);
+    try {
+      if (order.pdf_url) {
+        window.open(order.pdf_url, "_blank");
+      }
+      const client = createClient(supabaseUrl, supabaseKey);
+      await client
+        .from("Webattelier - orders")
+        .update({ status: "Done" })
+        .eq("id", orderId);
+      triggerExit("Geprint & afgerond");
+    } catch (e) {
+      console.error("Print ready failed:", e);
     } finally {
       setPrinting(false);
     }
@@ -520,7 +535,7 @@ function OrderCard({ order, lines, shop, highlighted, readOnly }) {
         },
       );
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      triggerExit("Gemarkeerd voor bulk");
+      triggerExit("Gearchiveerd & verstuurd");
     } catch (e) {
       console.error("Verstuur & markeer voor bulk failed:", e);
     } finally {
@@ -582,16 +597,16 @@ function OrderCard({ order, lines, shop, highlighted, readOnly }) {
             <InlineStack gap="200" blockAlign="center">
               {readOnly ? (
                 order.pdf_url ? (
-                  <Button variant="primary" onClick={handlePrintAndSend} loading={printing}>
-                    {printing ? "PDF aanmaken..." : "Print"}
+                  <Button variant="primary" onClick={handlePrintReady} loading={printing}>
+                    {printing ? "Printen..." : "Print"}
                   </Button>
                 ) : null
               ) : (
                 <>
                   <Button variant="primary" tone="critical" onClick={handlePrintAndSend} loading={printing}>
-                    {printing ? "PDF aanmaken..." : "Print & verstuur"}
+                    {printing ? "Versturen..." : "Print & verstuur"}
                   </Button>
-                  <Button onClick={handleArchiveAndSend} loading={archiving}>Verstuur &amp; markeer voor bulk</Button>
+                  <Button onClick={handleArchiveAndSend} loading={archiving}>Archiveer &amp; verstuur</Button>
                   <Popover
                     active={menuOpen}
                     onClose={() => setMenuOpen(false)}
@@ -705,7 +720,6 @@ export default function Orders() {
   }, [revalidator]);
 
   const STATUS_TABS = [
-    { id: "all", content: "Alle", filter: "" },
     { id: "open", content: "Open", filter: "open,Creating pdf" },
     { id: "ready-for-print", content: "Ready for print", filter: "ready for print" },
     { id: "done", content: "Done", filter: "done" },
@@ -998,7 +1012,7 @@ export default function Orders() {
                 const isReadOnly = status === "done" || status === "ready for print";
                 return (
                   <div key={orderId ?? i} className="order-card-enter" style={{ animationDelay: `${Math.min(i * 30, 300)}ms` }}>
-                    <OrderCard order={order} lines={lines} shop={shop} highlighted={highlighted} readOnly={isReadOnly} />
+                    <OrderCard order={order} lines={lines} shop={shop} highlighted={highlighted} readOnly={isReadOnly} supabaseUrl={supabaseUrl} supabaseKey={supabaseKey} />
                   </div>
                 );
               })}
