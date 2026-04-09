@@ -460,12 +460,12 @@ function OrderLine({ line }) {
 
 /* ── Order Card ── */
 
-function OrderCard({ order, lines, shop, highlighted, readOnly, supabaseUrl, supabaseKey }) {
+function OrderCard({ order, lines, shop, highlighted, errorExit, readOnly, supabaseUrl, supabaseKey }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [printing, setPrinting] = useState(false);
   const [archiving, setArchiving] = useState(false);
   const [exiting, setExiting] = useState(false);
-  const [actionDone, setActionDone] = useState(null); // "print" | "archive" | null
+  const [actionDone, setActionDone] = useState(null); // "print" | "archive" | "error" | null
   const cardRef = useRef(null);
 
   useEffect(() => {
@@ -473,6 +473,13 @@ function OrderCard({ order, lines, shop, highlighted, readOnly, supabaseUrl, sup
       cardRef.current.scrollIntoView({ behavior: "smooth", block: "nearest" });
     }
   }, [highlighted]);
+
+  useEffect(() => {
+    if (errorExit && !actionDone) {
+      setActionDone("Error");
+      setTimeout(() => setExiting(true), 600);
+    }
+  }, [errorExit]);
 
   const orderId = order.id != null ? String(order.id) : "—";
   const customerName = order["customer name"] || "—";
@@ -495,10 +502,13 @@ function OrderCard({ order, lines, shop, highlighted, readOnly, supabaseUrl, sup
           body: JSON.stringify({ orderId }),
         },
       );
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const resData = await res.json().catch(() => null);
+      console.log("Print & verstuur response:", res.status, resData);
+      if (!res.ok || resData?.status === "error" || resData?.error) throw new Error(resData?.message || resData?.error || `HTTP ${res.status}`);
       triggerExit("Verstuurd");
     } catch (e) {
       console.error("Print & verstuur failed:", e);
+      triggerExit("Error");
     } finally {
       setPrinting(false);
     }
@@ -518,6 +528,7 @@ function OrderCard({ order, lines, shop, highlighted, readOnly, supabaseUrl, sup
       triggerExit("Geprint & afgerond");
     } catch (e) {
       console.error("Print ready failed:", e);
+      triggerExit("Error");
     } finally {
       setPrinting(false);
     }
@@ -538,6 +549,7 @@ function OrderCard({ order, lines, shop, highlighted, readOnly, supabaseUrl, sup
       triggerExit("Gearchiveerd & verstuurd");
     } catch (e) {
       console.error("Verstuur & markeer voor bulk failed:", e);
+      triggerExit("Error");
     } finally {
       setArchiving(false);
     }
@@ -552,12 +564,16 @@ function OrderCard({ order, lines, shop, highlighted, readOnly, supabaseUrl, sup
         boxShadow: highlighted
           ? "0 0 0 3px rgba(192, 43, 43, 0.35)"
           : actionDone
-            ? "0 0 0 3px rgba(52, 125, 84, 0.35)"
+            ? actionDone === "Error"
+              ? "0 0 0 3px rgba(192, 43, 43, 0.35)"
+              : "0 0 0 3px rgba(52, 125, 84, 0.35)"
             : "none",
         outline: highlighted
           ? "2px solid rgba(192, 43, 43, 0.6)"
           : actionDone
-            ? "2px solid rgba(52, 125, 84, 0.6)"
+            ? actionDone === "Error"
+              ? "2px solid rgba(192, 43, 43, 0.6)"
+              : "2px solid rgba(52, 125, 84, 0.6)"
             : "2px solid transparent",
         opacity: exiting ? 0 : 1,
         transform: exiting ? "translateX(40px)" : "translateX(0)",
@@ -567,14 +583,18 @@ function OrderCard({ order, lines, shop, highlighted, readOnly, supabaseUrl, sup
     >
     {actionDone && (
       <div style={{
-        background: "linear-gradient(90deg, rgba(52, 125, 84, 0.08), transparent)",
+        background: actionDone === "Error"
+          ? "linear-gradient(90deg, rgba(192, 43, 43, 0.08), transparent)"
+          : "linear-gradient(90deg, rgba(52, 125, 84, 0.08), transparent)",
         padding: "8px 16px",
         borderRadius: "12px 12px 0 0",
         display: "flex",
         alignItems: "center",
         gap: "8px",
       }}>
-        <span style={{ color: "#347D54", fontWeight: 600, fontSize: "13px" }}>✓ {actionDone}</span>
+        <span style={{ color: actionDone === "Error" ? "#C02B2B" : "#347D54", fontWeight: 600, fontSize: "13px" }}>
+          {actionDone === "Error" ? "✕" : "✓"} {actionDone}
+        </span>
       </div>
     )}
     <Card>
@@ -621,7 +641,19 @@ function OrderCard({ order, lines, shop, highlighted, readOnly, supabaseUrl, sup
                     <ActionList
                       items={[
                         { content: "Bekijk details", onAction: () => window.open(`https://${shop}/admin/orders?query=name%3A%23${orderId}`, '_blank') },
-                        { content: "Verwijder", destructive: true },
+                        { content: "Verwijder", destructive: true, onAction: async () => {
+                          try {
+                            const client = createClient(supabaseUrl, supabaseKey);
+                            await client
+                              .from("Webattelier - orders")
+                              .update({ status: "Deleted" })
+                              .eq("id", orderId);
+                            triggerExit("Verwijderd");
+                          } catch (e) {
+                            console.error("Delete failed:", e);
+                            triggerExit("Error");
+                          }
+                        }},
                       ]}
                       onActionAnyItem={() => setMenuOpen(false)}
                     />
@@ -631,6 +663,15 @@ function OrderCard({ order, lines, shop, highlighted, readOnly, supabaseUrl, sup
             </InlineStack>
           </InlineStack>
         </Box>
+
+        {/* Error message */}
+        {order.error_message && (
+          <Box paddingBlockEnd="300">
+            <Banner tone="critical">
+              <p>{order.error_message}</p>
+            </Banner>
+          </Box>
+        )}
 
         {/* Lines */}
         {lines && lines.length > 0 ? (
@@ -672,6 +713,7 @@ export default function Orders() {
   const [searchValue, setSearchValue] = useState(search || "");
 
   const [changedIds, setChangedIds] = useState(new Set());
+  const [errorExitIds, setErrorExitIds] = useState(new Set());
   const changedTimers = useRef({});
 
   const handleRealtimeEvent = useCallback(
@@ -683,15 +725,20 @@ export default function Orders() {
       const changedId = record.id ?? record.orderId;
       if (changedId != null) {
         const key = String(changedId);
-        setChangedIds((prev) => new Set(prev).add(key));
-        clearTimeout(changedTimers.current[key]);
-        changedTimers.current[key] = setTimeout(() => {
-          setChangedIds((prev) => {
-            const next = new Set(prev);
-            next.delete(key);
-            return next;
-          });
-        }, 2000);
+        const newStatus = (record.status || "").toLowerCase();
+        if (newStatus === "error") {
+          setErrorExitIds((prev) => new Set(prev).add(key));
+        } else {
+          setChangedIds((prev) => new Set(prev).add(key));
+          clearTimeout(changedTimers.current[key]);
+          changedTimers.current[key] = setTimeout(() => {
+            setChangedIds((prev) => {
+              const next = new Set(prev);
+              next.delete(key);
+              return next;
+            });
+          }, 2000);
+        }
       }
 
       if (revalidator.state === "idle") {
@@ -724,6 +771,7 @@ export default function Orders() {
     { id: "ready-for-print", content: "Ready for print", filter: "ready for print" },
     { id: "done", content: "Done", filter: "done" },
     { id: "deleted", content: "Deleted", filter: "deleted" },
+    { id: "errors", content: "Errors", filter: "error" },
   ];
 
   const selectedTab = Math.max(0, STATUS_TABS.findIndex((t) => t.filter === status));
@@ -1010,9 +1058,10 @@ export default function Orders() {
                 const lines = orderId ? linesByOrder[orderId] || [] : [];
                 const highlighted = orderId ? changedIds.has(orderId) : false;
                 const isReadOnly = status === "done" || status === "ready for print";
+                const errorExit = orderId ? errorExitIds.has(orderId) : false;
                 return (
                   <div key={orderId ?? i} className="order-card-enter" style={{ animationDelay: `${Math.min(i * 30, 300)}ms` }}>
-                    <OrderCard order={order} lines={lines} shop={shop} highlighted={highlighted} readOnly={isReadOnly} supabaseUrl={supabaseUrl} supabaseKey={supabaseKey} />
+                    <OrderCard order={order} lines={lines} shop={shop} highlighted={highlighted} errorExit={errorExit} readOnly={isReadOnly} supabaseUrl={supabaseUrl} supabaseKey={supabaseKey} />
                   </div>
                 );
               })}
