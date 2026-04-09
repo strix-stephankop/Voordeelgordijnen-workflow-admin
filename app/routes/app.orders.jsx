@@ -228,16 +228,16 @@ function toDisplayValues(line) {
   let knipmaatLeft, knipmaatRight;
   if (isOG) {
     const totalPanels = (line.panelsLeft || 0) + (line.panelsRight || 0);
-    const knipmaat = totalPanels > 0 ? ((heightMm + 250) * totalPanels) / 10 : 0;
+    const knipmaat = totalPanels > 0 ? Math.round(((heightMm + 250) * totalPanels) / 10) : 0;
     const divRight = (line.panelDivision || "").toLowerCase().includes("right");
     knipmaatLeft = divRight ? 0 : knipmaat;
     knipmaatRight = divRight ? knipmaat : 0;
   } else {
     knipmaatLeft = plooiFactor
-      ? ((line.finishedWidthLeftInMm || 0) * plooiFactor) / 10
+      ? Math.round(((line.finishedWidthLeftInMm || 0) * plooiFactor) / 10)
       : (line.cutSizeLeftInMm || 0);
     knipmaatRight = plooiFactor
-      ? ((line.finishedWidthRightInMm || 0) * plooiFactor) / 10
+      ? Math.round(((line.finishedWidthRightInMm || 0) * plooiFactor) / 10)
       : (line.cutSizeRightInMm || 0);
   }
 
