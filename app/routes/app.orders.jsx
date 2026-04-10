@@ -227,7 +227,9 @@ function toDisplayValues(line) {
 
   let knipmaatLeft, knipmaatRight;
   if (isOG) {
-    const totalPanels = (line.panelsLeft || 0) + (line.panelsRight || 0);
+    const roundedLeft = Math.ceil((line.panelsLeft || 0) * 2) / 2;
+    const roundedRight = Math.ceil((line.panelsRight || 0) * 2) / 2;
+    const totalPanels = roundedLeft + roundedRight;
     const knipmaat = totalPanels > 0 ? Math.round(((heightMm + 250) * totalPanels) / 10) : 0;
     const divRight = (line.panelDivision || "").toLowerCase().includes("right");
     knipmaatLeft = divRight ? 0 : knipmaat;
@@ -347,7 +349,9 @@ function OrderLine({ line }) {
           } else if (field === "panelsLeft" || field === "panelsRight") {
             const newLeft = field === "panelsLeft" ? (Number(val) || 0) : (Number(prev.panelsLeft) || 0);
             const newRight = field === "panelsRight" ? (Number(val) || 0) : (Number(prev.panelsRight) || 0);
-            const knipmaat = (newLeft + newRight) * perPanel;
+            const roundedLeft = Math.ceil(newLeft * 2) / 2;
+            const roundedRight = Math.ceil(newRight * 2) / 2;
+            const knipmaat = (roundedLeft + roundedRight) * perPanel;
 
             const divRight = (line.panelDivision || "").toLowerCase().includes("right");
             next.knipmaatLeft = divRight ? 0 : knipmaat;
@@ -520,12 +524,14 @@ function OrderCard({ order, lines, shop, highlighted, errorExit, readOnly, supab
       if (order.pdf_url) {
         window.open(order.pdf_url, "_blank");
       }
-      const client = createClient(supabaseUrl, supabaseKey);
-      await client
-        .from("Webattelier - orders")
-        .update({ status: "Done" })
-        .eq("id", orderId);
-      triggerExit("Geprint & afgerond");
+      if (status !== "Done") {
+        const client = createClient(supabaseUrl, supabaseKey);
+        await client
+          .from("Webattelier - orders")
+          .update({ status: "Done" })
+          .eq("id", orderId);
+        triggerExit("Geprint & afgerond");
+      }
     } catch (e) {
       console.error("Print ready failed:", e);
       triggerExit("Error");
