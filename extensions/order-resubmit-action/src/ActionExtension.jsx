@@ -53,8 +53,6 @@ const ORDER_QUERY = `
   }
 `;
 
-const WEBHOOK_URL =
-  "https://voordeelgordijnen.n8n.sition.cloud/webhook/b16cf368-ecf4-414a-89bb-f5387ca2ffd0";
 
 export default extension("admin.order-details.action.render", async (root, api) => {
   const close = api.close || (() => {});
@@ -220,7 +218,7 @@ export default extension("admin.order-details.action.render", async (root, api) 
       );
     }
 
-    // Properties toggle
+    // Properties (read-only)
     if (visibleProps.length > 0) {
       const toggleRow = root.createComponent("InlineStack", {
         gap: "tight",
@@ -241,16 +239,6 @@ export default extension("admin.order-details.action.render", async (root, api) 
             },
           },
           `${isExpanded ? "▾" : "▸"} Eigenschappen (${visibleProps.length})`,
-        ),
-      );
-      toggleRow.appendChild(
-        root.createComponent(
-          "Button",
-          {
-            variant: "tertiary",
-            onPress: () => renderEditProperties(item),
-          },
-          "Bewerken",
         ),
       );
       wrapper.appendChild(toggleRow);
@@ -274,133 +262,9 @@ export default extension("admin.order-details.action.render", async (root, api) 
         propsBlock.appendChild(propsList);
         wrapper.appendChild(propsBlock);
       }
-    } else {
-      wrapper.appendChild(
-        root.createComponent(
-          "Button",
-          {
-            variant: "tertiary",
-            onPress: () => renderEditProperties(item),
-          },
-          "+ Eigenschappen toevoegen",
-        ),
-      );
     }
 
     return wrapper;
-  }
-
-  // ── Edit properties view ──
-  function renderEditProperties(item) {
-    action.replaceChildren();
-
-    action.updateProps({
-      title: `Eigenschappen — ${item.title}`,
-    });
-
-    const container = root.createComponent("BlockStack", { gap: "base" });
-
-    container.appendChild(
-      root.createComponent(
-        "Banner",
-        { tone: "info" },
-        "Bewerk de eigenschappen van dit item. Klik 'Klaar' om terug te gaan.",
-      ),
-    );
-
-    function renderPropertyRows() {
-      // Remove all children except the banner
-      while (container.children.length > 1) {
-        container.removeChild(container.children[container.children.length - 1]);
-      }
-
-      if (item.properties.length === 0) {
-        container.appendChild(
-          root.createComponent("Text", { tone: "subdued" }, "Nog geen eigenschappen."),
-        );
-      }
-
-      for (let pi = 0; pi < item.properties.length; pi++) {
-        const prop = item.properties[pi];
-        const propIdx = pi;
-
-        const card = root.createComponent("Section", {});
-        const row = root.createComponent("BlockStack", { gap: "tight" });
-
-        const fields = root.createComponent("InlineStack", {
-          gap: "base",
-          blockAlignment: "end",
-        });
-        fields.appendChild(
-          root.createComponent("TextField", {
-            label: "Naam",
-            value: prop.key,
-            onChange: (val) => {
-              item.properties[propIdx].key = val;
-            },
-          }),
-        );
-        fields.appendChild(
-          root.createComponent("TextField", {
-            label: "Waarde",
-            value: prop.value,
-            onChange: (val) => {
-              item.properties[propIdx].value = val;
-            },
-          }),
-        );
-        fields.appendChild(
-          root.createComponent(
-            "Button",
-            {
-              tone: "critical",
-              variant: "tertiary",
-              onPress: () => {
-                item.properties.splice(propIdx, 1);
-                renderPropertyRows();
-              },
-            },
-            "Verwijder",
-          ),
-        );
-
-        row.appendChild(fields);
-        card.appendChild(row);
-        container.appendChild(card);
-      }
-
-      container.appendChild(
-        root.createComponent(
-          "Button",
-          {
-            variant: "secondary",
-            onPress: () => {
-              item.properties.push({ key: "", value: "" });
-              renderPropertyRows();
-            },
-          },
-          "+ Eigenschap toevoegen",
-        ),
-      );
-    }
-
-    renderPropertyRows();
-
-    // Back button
-    const backRow = root.createComponent("InlineStack", {
-      gap: "base",
-      inlineAlignment: "end",
-    });
-    backRow.appendChild(
-      root.createComponent(
-        "Button",
-        { variant: "primary", onPress: () => renderUI() },
-        "Klaar",
-      ),
-    );
-    container.appendChild(backRow);
-
-    action.appendChild(container);
   }
 
   // ── Submit to webhook ──
@@ -451,27 +315,16 @@ export default extension("admin.order-details.action.render", async (root, api) 
     // Send via app backend — fetch() in admin extensions auto-resolves relative URLs
     // to app_url and adds Authorization header automatically
     (async () => {
-      try {
-        const res = await fetch("/app/resubmit-order", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-        if (!res.ok) {
-          const body = await res.json().catch(() => ({}));
-          throw new Error(body.error || `Error ${res.status}`);
-        }
-        return res;
-      } catch (fetchErr) {
-        // Fallback: if fetch to app backend fails, try direct webhook call
-        const res = await fetch(WEBHOOK_URL, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-        if (!res.ok) throw new Error(`Webhook error: ${res.status}`);
-        return res;
+      const res = await fetch("/app/resubmit-order", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || `Error ${res.status}`);
       }
+      return res;
     })()
       .then(() => {
         action.replaceChildren();
