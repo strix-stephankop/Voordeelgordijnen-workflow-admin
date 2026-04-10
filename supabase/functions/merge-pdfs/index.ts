@@ -21,12 +21,17 @@ Deno.serve(async (req) => {
   }
 
   try {
-    const { urls } = await req.json();
+    const body = await req.json();
+    const { urls, pdfs } = body;
 
-    if (!Array.isArray(urls) || urls.length === 0) {
+    const hasUrls = Array.isArray(urls) && urls.length > 0;
+    const hasPdfs = Array.isArray(pdfs) && pdfs.length > 0;
+
+    if (!hasUrls && !hasPdfs) {
       return new Response(
         JSON.stringify({
-          error: "Provide a non-empty array of PDF URLs in { urls: [...] }",
+          error:
+            'Provide { urls: ["..."] } for URL-based merge, { pdfs: ["base64..."] } for base64 merge, or both.',
         }),
         { status: 400, headers: { "Content-Type": "application/json" } }
       );
@@ -34,24 +39,40 @@ Deno.serve(async (req) => {
 
     const mergedPdf = await PDFDocument.create();
 
-    for (const url of urls) {
-      const response = await fetch(url);
-      if (!response.ok) {
-        return new Response(
-          JSON.stringify({
-            error: `Failed to fetch PDF from ${url}: ${response.statusText}`,
-          }),
-          { status: 422, headers: { "Content-Type": "application/json" } }
+    // Merge from URLs
+    if (hasUrls) {
+      for (const url of urls) {
+        const response = await fetch(url);
+        if (!response.ok) {
+          return new Response(
+            JSON.stringify({
+              error: `Failed to fetch PDF from ${url}: ${response.statusText}`,
+            }),
+            { status: 422, headers: { "Content-Type": "application/json" } }
+          );
+        }
+
+        const pdfBytes = await response.arrayBuffer();
+        const sourcePdf = await PDFDocument.load(pdfBytes);
+        const copiedPages = await mergedPdf.copyPages(
+          sourcePdf,
+          sourcePdf.getPageIndices()
         );
+        for (const page of copiedPages) mergedPdf.addPage(page);
       }
+    }
 
-      const pdfBytes = await response.arrayBuffer();
-      const sourcePdf = await PDFDocument.load(pdfBytes);
-      const pageIndices = sourcePdf.getPageIndices();
-      const copiedPages = await mergedPdf.copyPages(sourcePdf, pageIndices);
-
-      for (const page of copiedPages) {
-        mergedPdf.addPage(page);
+    // Merge from base64
+    if (hasPdfs) {
+      for (let i = 0; i < pdfs.length; i++) {
+        const raw = pdfs[i].replace(/^data:application\/pdf;base64,/, "");
+        const binary = Uint8Array.from(atob(raw), (c) => c.charCodeAt(0));
+        const sourcePdf = await PDFDocument.load(binary);
+        const copiedPages = await mergedPdf.copyPages(
+          sourcePdf,
+          sourcePdf.getPageIndices()
+        );
+        for (const page of copiedPages) mergedPdf.addPage(page);
       }
     }
 
@@ -67,7 +88,10 @@ Deno.serve(async (req) => {
   } catch (err) {
     return new Response(JSON.stringify({ error: err.message }), {
       status: 500,
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "Access-Control-Allow-Origin": "*",
+      },
     });
   }
 });

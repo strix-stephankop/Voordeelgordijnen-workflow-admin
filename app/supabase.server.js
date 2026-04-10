@@ -184,6 +184,30 @@ export async function queryAllSyncChecksByDate(date) {
   return data ?? [];
 }
 
+export async function queryAllSyncChecksByDateRange(dateFrom, dateTo) {
+  const allData = [];
+  let from = 0;
+  const batchSize = 1000;
+
+  while (true) {
+    const { data, error } = await supabase
+      .from("sync_checks")
+      .select("*")
+      .gte("created_at", `${dateFrom}T00:00:00`)
+      .lte("created_at", `${dateTo}T23:59:59`)
+      .order("created_at", { ascending: false })
+      .range(from, from + batchSize - 1);
+
+    if (error) throw error;
+    if (!data || data.length === 0) break;
+    allData.push(...data);
+    if (data.length < batchSize) break;
+    from += batchSize;
+  }
+
+  return allData;
+}
+
 export async function getSyncCheck(id) {
   const { data, error } = await supabase
     .from("sync_checks")

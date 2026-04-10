@@ -18,9 +18,11 @@ import {
   Divider,
   Icon,
   List,
+  Modal,
+  TextField,
 } from "@shopify/polaris";
 import { ChevronDownIcon, ChevronUpIcon, InfoIcon, ExportIcon } from "@shopify/polaris-icons";
-import { TitleBar, Modal, useAppBridge } from "@shopify/app-bridge-react";
+import { TitleBar, Modal as AppBridgeModal, useAppBridge } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
 import { querySyncChecks, getSyncCheck, updateSyncCheckReport } from "../supabase.server";
 
@@ -434,12 +436,12 @@ function SyncCheckCard({ check, shop }) {
     <Card padding="0">
       <Box padding="400">
         <div
-          onClick={() => hasIssues && setOpen((o) => !o)}
-          style={{ cursor: hasIssues ? "pointer" : "default", userSelect: "none" }}
+          onClick={() => (hasIssues || report.summary) && setOpen((o) => !o)}
+          style={{ cursor: (hasIssues || report.summary) ? "pointer" : "default", userSelect: "none" }}
         >
           <InlineStack align="space-between" blockAlign="center" wrap={false}>
             <InlineStack gap="300" blockAlign="center" wrap={false}>
-              {hasIssues && (
+              {(hasIssues || report.summary) && (
                 <div style={{ display: "flex", alignItems: "center" }}>
                   <Icon source={open ? ChevronUpIcon : ChevronDownIcon} tone="subdued" />
                 </div>
@@ -484,6 +486,18 @@ function SyncCheckCard({ check, shop }) {
         <Divider />
         <Box padding="400" paddingBlockStart="0">
           <BlockStack gap="0">
+            {report.summary && (
+              <Box paddingBlockStart="300" paddingBlockEnd="200">
+                <InlineStack gap="300" blockAlign="center" wrap>
+                  <Text variant="bodySm" as="span" fontWeight="semibold">Gecontroleerd:</Text>
+                  <Badge size="small">KL {report.summary.klChecked ?? 0}</Badge>
+                  <Badge size="small">WA {report.summary.waChecked ?? 0}</Badge>
+                  <Badge size="small">NE {report.summary.neChecked ?? 0}</Badge>
+                  <Badge size="small">GH {report.summary.ghChecked ?? 0}</Badge>
+                  <Badge size="small">HKL {report.summary.hklChecked ?? 0}</Badge>
+                </InlineStack>
+              </Box>
+            )}
             <IssueGroup
               title="Missende Completed tag"
               items={noTagIssues}
@@ -519,6 +533,195 @@ function SyncCheckCard({ check, shop }) {
 }
 
 /* ── Info modal (rendered inside Page) ── */
+
+/* ── Unique issues export ── */
+
+async function fetchChecksByDateRange(dateFrom, dateTo) {
+  const res = await fetch(`/app/sync-checks/export?dateFrom=${dateFrom}&dateTo=${dateTo}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+function deduplicateIssues(checks) {
+  const issueMap = new Map();
+  for (const check of checks) {
+    const report = typeof check.report === "string" ? JSON.parse(check.report) : (check.report || {});
+    for (const f of (report.failures || [])) {
+      const key = `${f.orderName}|${f.category || "unknown"}|${f.issue || ""}`;
+      const existing = issueMap.get(key);
+      if (!existing || f.resolved) issueMap.set(key, { ...f, lastSeen: check.created_at });
+    }
+    for (const f of (report.possibleWaIssues || [])) {
+      const key = `${f.orderName}|wa|${f.issue || ""}`;
+      const existing = issueMap.get(key);
+      if (!existing || f.resolved) issueMap.set(key, { ...f, category: "wa", issue: f.issue || "Possible WA issue", lastSeen: check.created_at });
+    }
+  }
+  return [...issueMap.values()];
+}
+
+async function generateIssuesExcel(issues, dateFrom, dateTo) {
+  const { utils, writeFile } = await import("xlsx");
+
+  const rows = issues.map((item) => ({
+    "Order": item.orderName || "",
+    "Order ID": item.orderId || "",
+    "Categorie": item.category || "",
+    "Issue": item.issue || "",
+    "Status": item.resolved ? "Opgelost" : "Open",
+    "Aangemaakt": item.createdAt || "",
+    "Laatst gezien": item.lastSeen || "",
+    "Tags": (item.tags || []).join(", "),
+    "Bestemmingen": (item.destinations || []).join(", "),
+  }));
+
+  const ws = utils.json_to_sheet(rows);
+  const colWidths = [
+    { wch: 12 }, { wch: 14 }, { wch: 16 }, { wch: 30 },
+    { wch: 10 }, { wch: 22 }, { wch: 22 }, { wch: 20 }, { wch: 14 },
+  ];
+  ws["!cols"] = colWidths;
+
+  const wb = utils.book_new();
+  utils.book_append_sheet(wb, ws, "Issues");
+  writeFile(wb, `sync-issues-${dateFrom}-${dateTo}.xlsx`);
+}
+
+function ExportIssuesModal({ open, onClose }) {
+  const today = new Date().toISOString().split("T")[0];
+  const [dateFrom, setDateFrom] = useState(today);
+  const [dateTo, setDateTo] = useState(today);
+  const [loading, setLoading] = useState(false);
+  const [exportError, setExportError] = useState(null);
+  const [preview, setPreview] = useState(null);
+
+  async function handleExport() {
+    setLoading(true);
+    setExportError(null);
+    try {
+      const checks = await fetchChecksByDateRange(dateFrom, dateTo);
+      const issues = deduplicateIssues(checks);
+      if (issues.length === 0) {
+        setExportError("Geen issues gevonden in deze periode.");
+        setLoading(false);
+        return;
+      }
+      await generateIssuesExcel(issues, dateFrom, dateTo);
+      onClose();
+    } catch (e) {
+      setExportError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handlePreview() {
+    setLoading(true);
+    setExportError(null);
+    setPreview(null);
+    try {
+      const checks = await fetchChecksByDateRange(dateFrom, dateTo);
+      const issues = deduplicateIssues(checks);
+      setPreview(issues);
+    } catch (e) {
+      setExportError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      title="Exporteer unieke issues"
+      primaryAction={{
+        content: loading ? "Bezig..." : "Download Excel",
+        onAction: handleExport,
+        disabled: loading,
+      }}
+      secondaryActions={[
+        {
+          content: "Voorbeeld",
+          onAction: handlePreview,
+          disabled: loading,
+        },
+      ]}
+    >
+      <Modal.Section>
+        <BlockStack gap="400">
+          <Text as="p" tone="subdued">
+            Selecteer een periode om een overzicht te exporteren van alle unieke issues.
+            Dubbele meldingen worden samengevoegd — de meest recente status wordt bewaard.
+          </Text>
+          <InlineStack gap="300" blockAlign="end">
+            <Box minWidth="200px">
+              <TextField
+                label="Van"
+                type="date"
+                value={dateFrom}
+                onChange={setDateFrom}
+                autoComplete="off"
+              />
+            </Box>
+            <Box minWidth="200px">
+              <TextField
+                label="Tot en met"
+                type="date"
+                value={dateTo}
+                onChange={setDateTo}
+                autoComplete="off"
+              />
+            </Box>
+          </InlineStack>
+
+          {exportError && (
+            <Banner tone="critical">
+              <p>{exportError}</p>
+            </Banner>
+          )}
+
+          {preview && (
+            <BlockStack gap="200">
+              <Text variant="headingSm" as="h3">
+                {preview.length} unieke issue{preview.length !== 1 ? "s" : ""} gevonden
+              </Text>
+              <Box
+                paddingBlockStart="200"
+                paddingBlockEnd="200"
+                paddingInlineStart="300"
+                paddingInlineEnd="300"
+                background="bg-surface-secondary"
+                borderRadius="200"
+              >
+                <BlockStack gap="100">
+                  {preview.slice(0, 20).map((item, i) => (
+                    <InlineStack key={i} gap="200" blockAlign="center">
+                      <Badge size="small" tone={item.resolved ? "success" : "critical"}>
+                        {item.resolved ? "Opgelost" : "Open"}
+                      </Badge>
+                      <Text variant="bodySm" as="span" fontWeight="semibold">
+                        {item.orderName}
+                      </Text>
+                      <Text variant="bodySm" as="span" tone="subdued">
+                        {item.issue}
+                      </Text>
+                    </InlineStack>
+                  ))}
+                  {preview.length > 20 && (
+                    <Text variant="bodySm" as="span" tone="subdued">
+                      ... en {preview.length - 20} meer
+                    </Text>
+                  )}
+                </BlockStack>
+              </Box>
+            </BlockStack>
+          )}
+        </BlockStack>
+      </Modal.Section>
+    </Modal>
+  );
+}
 
 /* ── Page ── */
 
@@ -717,7 +920,27 @@ export default function SyncChecks() {
   const [searchParams, setSearchParams] = useSearchParams();
   const revalidator = useRevalidator();
   const [exporting, setExporting] = useState(false);
+  const [triggering, setTriggering] = useState(false);
+  const [exportModalOpen, setExportModalOpen] = useState(false);
   const shopify = useAppBridge();
+
+  async function handleManualTrigger() {
+    setTriggering(true);
+    try {
+      await fetch(
+        "https://voordeelgordijnen.n8n.sition.cloud/webhook/sync-check-manual",
+        { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" },
+      );
+      // Wait a moment then refresh to show the new check
+      setTimeout(() => {
+        if (revalidator.state === "idle") revalidator.revalidate();
+        setTriggering(false);
+      }, 5000);
+    } catch (e) {
+      console.error("Manual trigger failed:", e);
+      setTriggering(false);
+    }
+  }
 
   // Auto-refresh every 60s
   useEffect(() => {
@@ -768,20 +991,20 @@ export default function SyncChecks() {
     <Page fullWidth title="Sync Checks">
       <TitleBar title="Sync Checks" />
 
-      <Modal id="sync-check-info-modal" variant="large">
+      <AppBridgeModal id="sync-check-info-modal" variant="large">
         <Box padding="400">
           <BlockStack gap="400">
             <Text variant="headingSm" as="h3">Overzicht</Text>
             <Text as="p">
               De Sync Check is een geautomatiseerde workflow (n8n) die <strong>elk uur</strong> draait.
               Het doel is om te controleren of nieuwe Shopify-orders correct zijn verwerkt door alle
-              gekoppelde systemen. Elke controle kijkt naar orders van de <strong>afgelopen 2 uur</strong>.
+              gekoppelde systemen. Elke controle kijkt naar orders van het <strong>afgelopen uur</strong>.
             </Text>
 
             <Text variant="headingSm" as="h3">Stap 1: Orders ophalen uit Shopify</Text>
             <Text as="p">
-              Alle orders die in de afgelopen 2 uur zijn aangemaakt worden opgehaald via de Shopify
-              GraphQL API, inclusief tags, line items en productie-bestemming (metafield).
+              Alle orders die in het afgelopen uur zijn aangemaakt worden opgehaald via de Shopify
+              GraphQL API (max 250), inclusief tags, line items en productie-bestemming (metafield).
             </Text>
 
             <Text variant="headingSm" as="h3">Stap 2: Orders categoriseren</Text>
@@ -795,7 +1018,7 @@ export default function SyncChecks() {
               </List.Item>
               <List.Item>
                 <strong>Kleurstalen (KL)</strong> — Orders met de tag "kleurstaal". Moeten een record
-                hebben in de Kleurstalen tabel in Supabase.
+                hebben in de Kleurstalen tabel.
               </List.Item>
               <List.Item>
                 <strong>NE-Distriservice (NE)</strong> — Orders met de tag "ne-distriservice". Moeten
@@ -803,20 +1026,28 @@ export default function SyncChecks() {
               </List.Item>
               <List.Item>
                 <strong>Webattelier (WA)</strong> — Orders met productie-bestemming "WA" (geen losse stof).
-                Moeten een record hebben in de Webattelier tabel.
+                Moeten een record hebben in de Webattelier - orders tabel.
               </List.Item>
               <List.Item>
-                <strong>Overig (GH, VDG, DEC, HKL)</strong> — Geen Supabase-check nodig.
+                <strong>GrandHome (GH)</strong> — Orders met productie-bestemming "GH". Moeten een record
+                hebben in de grandhome tabel.
+              </List.Item>
+              <List.Item>
+                <strong>HKL</strong> — Orders met productie-bestemming "HKL". Moeten een record
+                hebben in de hkl tabel.
+              </List.Item>
+              <List.Item>
+                <strong>Overig (VDG, DEC)</strong> — Geen Supabase-check nodig.
               </List.Item>
             </List>
             <Text as="p" tone="subdued">
-              Orders met "vooraf betalen per factuur" worden overgeslagen.
+              Orders met "vooraf betalen per factuur" of "aangepast_artikel" worden overgeslagen.
             </Text>
 
             <Text variant="headingSm" as="h3">Stap 3: Supabase-records controleren</Text>
             <Text as="p">
-              Voor elke categorie worden de Supabase-tabellen gecontroleerd. Ontbrekende records worden
-              als probleem gerapporteerd.
+              Voor elke categorie (KL, WA, NE, GH, HKL) worden de bijbehorende Supabase-tabellen
+              gecontroleerd. Ontbrekende records worden als probleem gerapporteerd.
             </Text>
 
             <Text variant="headingSm" as="h3">Stap 4: Rapport opslaan</Text>
@@ -829,9 +1060,10 @@ export default function SyncChecks() {
 
             <Text variant="headingSm" as="h3">Wat je ziet op deze pagina</Text>
             <Text as="p">
-              Elke kaart is een sync check (een uur). Klik op een kaart om details te zien.
-              Issues zijn onderverdeeld in: Missende Completed tag (oranje), Missende Supabase records
-              (rood), en Mogelijke WA problemen (geel). Elk issue heeft een checkbox om het als opgelost
+              Elke kaart is een sync check (elk uur). Klik op een kaart om details te zien.
+              Bovenaan zie je per groep hoeveel orders gecontroleerd zijn (KL, WA, NE, GH, HKL).
+              Issues zijn onderverdeeld in: Missende Completed tag (oranje) en Missende Supabase records
+              (rood). Elk issue heeft een checkbox om het als opgelost
               te markeren. Ordernummers linken naar Shopify Admin.
             </Text>
           </BlockStack>
@@ -839,7 +1071,7 @@ export default function SyncChecks() {
         <TitleBar title="Hoe werkt de Sync Check?">
           <button onClick={() => shopify.modal.hide("sync-check-info-modal")}>Sluiten</button>
         </TitleBar>
-      </Modal>
+      </AppBridgeModal>
 
       <BlockStack gap="400">
         <InlineStack align="space-between" blockAlign="center">
@@ -854,9 +1086,17 @@ export default function SyncChecks() {
               accessibilityLabel="Uitleg sync checks"
             />
           </InlineStack>
-          <Text variant="bodySm" as="span" tone="subdued">
-            {total} checks
-          </Text>
+          <InlineStack gap="200" blockAlign="center">
+            <Text variant="bodySm" as="span" tone="subdued">
+              {total} checks
+            </Text>
+            <Button size="slim" onClick={handleManualTrigger} loading={triggering}>
+              Check nu
+            </Button>
+            <Button size="slim" icon={ExportIcon} onClick={() => setExportModalOpen(true)}>
+              Export issues
+            </Button>
+          </InlineStack>
         </InlineStack>
 
         <InlineStack gap="300" blockAlign="center" align="space-between">
@@ -935,6 +1175,11 @@ export default function SyncChecks() {
           </InlineStack>
         )}
       </BlockStack>
+
+      <ExportIssuesModal
+        open={exportModalOpen}
+        onClose={() => setExportModalOpen(false)}
+      />
     </Page>
   );
 }
