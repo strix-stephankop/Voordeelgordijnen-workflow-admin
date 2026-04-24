@@ -30,7 +30,7 @@ import { queryTable, queryLinesByOrderNumbers, searchOrders } from "../supabase.
 const PAGE_SIZE = 50;
 
 export const loader = async ({ request }) => {
-  const { session } = await authenticate.admin(request);
+  const { admin, session } = await authenticate.admin(request);
   const shop = session.shop;
 
   const url = new URL(request.url);
@@ -50,9 +50,34 @@ export const loader = async ({ request }) => {
     const orderIds = data.map((o) => String(o.id)).filter(Boolean);
     const linesByOrder = await queryLinesByOrderNumbers(orderIds);
 
+    // Look up Shopify admin order IDs for direct links
+    let shopifyOrderIds = {};
+    if (orderIds.length > 0) {
+      try {
+        const query = orderIds.map((n) => `name:#${n}`).join(" OR ");
+        const result = await admin.graphql(
+          `#graphql
+          query orders($query: String!) {
+            orders(first: 50, query: $query) {
+              nodes { id name }
+            }
+          }`,
+          { variables: { query } },
+        ).then((r) => r.json());
+        for (const node of result.data?.orders?.nodes ?? []) {
+          const num = node.name?.replace("#", "");
+          const adminId = node.id?.replace("gid://shopify/Order/", "");
+          if (num && adminId) shopifyOrderIds[num] = adminId;
+        }
+      } catch (e) {
+        console.error("Failed to look up Shopify order IDs:", e.message);
+      }
+    }
+
     return json({
       orders: data,
       linesByOrder,
+      shopifyOrderIds,
       total: count,
       page,
       search,
@@ -69,6 +94,7 @@ export const loader = async ({ request }) => {
     return json({
       orders: [],
       linesByOrder: {},
+      shopifyOrderIds: {},
       total: 0,
       page,
       search,
@@ -464,7 +490,7 @@ function OrderLine({ line }) {
 
 /* ── Order Card ── */
 
-function OrderCard({ order, lines, shop, highlighted, errorExit, readOnly, supabaseUrl, supabaseKey }) {
+function OrderCard({ order, lines, shop, highlighted, errorExit, readOnly, supabaseUrl, supabaseKey, shopifyOrderIds }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [printing, setPrinting] = useState(false);
   const [archiving, setArchiving] = useState(false);
@@ -646,7 +672,13 @@ function OrderCard({ order, lines, shop, highlighted, errorExit, readOnly, supab
                   >
                     <ActionList
                       items={[
-                        { content: "Bekijk details", onAction: () => window.open(`https://${shop}/admin/orders?query=name%3A%23${orderId}`, '_blank') },
+                        { content: "Bekijk details", onAction: () => {
+                          const shopifyId = shopifyOrderIds?.[orderId];
+                          const url = shopifyId
+                            ? `https://${shop}/admin/orders/${shopifyId}`
+                            : `https://${shop}/admin/orders?query=name%3A%23${orderId}`;
+                          window.open(url, '_blank');
+                        }},
                         { content: "Verwijder", destructive: true, onAction: async () => {
                           try {
                             const client = createClient(supabaseUrl, supabaseKey);
@@ -708,7 +740,7 @@ function OrderCard({ order, lines, shop, highlighted, errorExit, readOnly, supab
 /* ── Main Page ── */
 
 export default function Orders() {
-  const { orders, linesByOrder, total, page, search, error, sortBy, sortDir, status, shop, supabaseUrl, supabaseKey } =
+  const { orders, linesByOrder, shopifyOrderIds, total, page, search, error, sortBy, sortDir, status, shop, supabaseUrl, supabaseKey } =
     useLoaderData();
   const [bulkPrinting, setBulkPrinting] = useState(false);
   const [bulkProgress, setBulkProgress] = useState({ step: "", current: 0, total: 0 });
@@ -1067,7 +1099,7 @@ export default function Orders() {
                 const errorExit = orderId ? errorExitIds.has(orderId) : false;
                 return (
                   <div key={orderId ?? i} className="order-card-enter" style={{ animationDelay: `${Math.min(i * 30, 300)}ms` }}>
-                    <OrderCard order={order} lines={lines} shop={shop} highlighted={highlighted} errorExit={errorExit} readOnly={isReadOnly} supabaseUrl={supabaseUrl} supabaseKey={supabaseKey} />
+                    <OrderCard order={order} lines={lines} shop={shop} highlighted={highlighted} errorExit={errorExit} readOnly={isReadOnly} supabaseUrl={supabaseUrl} supabaseKey={supabaseKey} shopifyOrderIds={shopifyOrderIds} />
                   </div>
                 );
               })}

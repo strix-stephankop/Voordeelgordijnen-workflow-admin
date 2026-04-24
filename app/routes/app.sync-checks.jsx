@@ -1047,24 +1047,70 @@ export default function SyncChecks() {
             <Text variant="headingSm" as="h3">Stap 3: Supabase-records controleren</Text>
             <Text as="p">
               Voor elke categorie (KL, WA, NE, GH, HKL) worden de bijbehorende Supabase-tabellen
-              gecontroleerd. Ontbrekende records worden als probleem gerapporteerd.
+              gecontroleerd. Ontbrekende records worden als probleem gerapporteerd. Voor WA-orders
+              worden daarnaast heuristische controles op de Webattelier-lijnen gedraaid (o.a.
+              ontbrekende plooifactor, afwijkende afmetingen); deze verschijnen als "Mogelijke WA
+              problemen".
             </Text>
 
             <Text variant="headingSm" as="h3">Stap 4: Rapport opslaan</Text>
             <Text as="p">
-              Het rapport wordt opgeslagen in de sync_checks tabel. Bij problemen wordt optioneel een
-              Slack-melding verstuurd.
+              Het rapport wordt opgeslagen in de <code>sync_checks</code> tabel met daarin een
+              <code>summary</code> (aantal gecontroleerde orders per groep), <code>failures</code>
+              (missende tag + missende Supabase records) en <code>possibleWaIssues</code>. Bij
+              problemen wordt optioneel een Slack-melding verstuurd.
             </Text>
 
             <Divider />
 
             <Text variant="headingSm" as="h3">Wat je ziet op deze pagina</Text>
             <Text as="p">
-              Elke kaart is een sync check (elk uur). Klik op een kaart om details te zien.
-              Bovenaan zie je per groep hoeveel orders gecontroleerd zijn (KL, WA, NE, GH, HKL).
-              Issues zijn onderverdeeld in: Missende Completed tag (oranje) en Missende Supabase records
-              (rood). Elk issue heeft een checkbox om het als opgelost
-              te markeren. Ordernummers linken naar Shopify Admin.
+              Elke kaart is één sync check (elk uur). De kop toont datum/tijd, het aantal
+              gecontroleerde orders en een status-badge: <strong>Geen problemen</strong> (groen),
+              <strong>Alles afgevinkt</strong> (groen) of <strong>X open</strong> (rood). Klik een
+              kaart open voor details.
+            </Text>
+            <Text as="p">
+              In de details zie je bovenaan per groep hoeveel orders gecontroleerd zijn (KL, WA, NE,
+              GH, HKL). Issues zijn onderverdeeld in drie categorieën:
+            </Text>
+            <List type="bullet">
+              <List.Item>
+                <strong>Missende Completed tag</strong> (oranje) — order heeft de "Completed" tag
+                niet binnen 30 minuten gekregen.
+              </List.Item>
+              <List.Item>
+                <strong>Missende Supabase records</strong> (rood) — order ontbreekt in de verwachte
+                Supabase-tabel voor zijn categorie.
+              </List.Item>
+              <List.Item>
+                <strong>Mogelijke WA problemen</strong> (oranje) — heuristische waarschuwingen op
+                Webattelier-lijnen die manuele controle verdienen.
+              </List.Item>
+            </List>
+            <Text as="p">
+              Elk issue heeft een checkbox om het als opgelost te markeren; dat wordt direct
+              teruggeschreven naar <code>sync_checks.report</code>. Ordernummers linken naar
+              Shopify Admin.
+            </Text>
+
+            <Text variant="headingSm" as="h3">Exporteren</Text>
+            <List type="bullet">
+              <List.Item>
+                <strong>Export PDF</strong> — per sync check (knop rechtsboven op de kaart zodra er
+                issues zijn). Genereert een rapport met stats, categorie-pills en alle issues.
+              </List.Item>
+              <List.Item>
+                <strong>Exporteer unieke issues</strong> — bovenaan de pagina. Kies een periode en
+                download een Excel met ontdubbelde issues (dezelfde order + categorie + issue-tekst
+                wordt samengevoegd, meest recente status wordt bewaard).
+              </List.Item>
+            </List>
+
+            <Divider />
+
+            <Text as="p" tone="subdued" alignment="end">
+              Laatst bijgewerkt: 24-04-2026
             </Text>
           </BlockStack>
         </Box>

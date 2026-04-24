@@ -56,7 +56,8 @@ export async function queryLinesByOrderNumbers(orderNumbers) {
     .from("Webattelier - lines")
     .select("*")
     .in("orderId", orderNumbers)
-    .order("customer_reference", { ascending: true });
+    .order("customer_reference", { ascending: true })
+    .range(0, 9999);
 
   if (error) throw error;
 
