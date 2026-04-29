@@ -2,6 +2,12 @@ import { json } from "@remix-run/node";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 
+const CORS_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization",
+};
+
 const DEFAULT_WEBHOOK =
   "https://voordeelgordijnen.n8n.sition.cloud/webhook/b16cf368-ecf4-414a-89bb-f5387ca2ffd0";
 
@@ -59,13 +65,28 @@ const ORDER_QUERY = `
 `;
 
 export const loader = async ({ request }) => {
-  const { admin } = await authenticate.admin(request);
+  if (request.method === "OPTIONS") {
+    return new Response(null, { status: 204, headers: CORS_HEADERS });
+  }
+
+  let admin;
+  try {
+    ({ admin } = await authenticate.admin(request));
+  } catch (authResponse) {
+    if (authResponse instanceof Response) {
+      return json(
+        { order: null, error: "Authentication failed" },
+        { status: 401, headers: CORS_HEADERS },
+      );
+    }
+    throw authResponse;
+  }
 
   const url = new URL(request.url);
   const orderId = url.searchParams.get("orderId");
 
   if (!orderId) {
-    return json({ order: null, error: "Missing orderId" }, { status: 400 });
+    return json({ order: null, error: "Missing orderId" }, { status: 400, headers: CORS_HEADERS });
   }
 
   try {
@@ -75,7 +96,7 @@ export const loader = async ({ request }) => {
     const { data } = await response.json();
 
     if (!data?.order) {
-      return json({ order: null, error: "Order niet gevonden" }, { status: 404 });
+      return json({ order: null, error: "Order niet gevonden" }, { status: 404, headers: CORS_HEADERS });
     }
 
     const order = data.order;
@@ -103,15 +124,30 @@ export const loader = async ({ request }) => {
           })),
         })),
       },
-    });
+    }, { headers: CORS_HEADERS });
   } catch (e) {
     console.error("Failed to fetch order:", e.message);
-    return json({ order: null, error: e.message }, { status: 500 });
+    return json({ order: null, error: e.message }, { status: 500, headers: CORS_HEADERS });
   }
 };
 
 export const action = async ({ request }) => {
-  const { admin } = await authenticate.admin(request);
+  if (request.method === "OPTIONS") {
+    return new Response(null, { status: 204, headers: CORS_HEADERS });
+  }
+
+  try {
+    await authenticate.admin(request);
+  } catch (authResponse) {
+    if (authResponse instanceof Response) {
+      return json(
+        { ok: false, error: "Authentication failed" },
+        { status: 401, headers: CORS_HEADERS },
+      );
+    }
+    throw authResponse;
+  }
+
   const payload = await request.json();
 
   let webhookUrl = DEFAULT_WEBHOOK;
@@ -132,11 +168,11 @@ export const action = async ({ request }) => {
     if (!res.ok) {
       return json(
         { ok: false, error: `Webhook responded with ${res.status}` },
-        { status: 502 },
+        { status: 502, headers: CORS_HEADERS },
       );
     }
-    return json({ ok: true });
+    return json({ ok: true }, { headers: CORS_HEADERS });
   } catch (e) {
-    return json({ ok: false, error: e.message }, { status: 502 });
+    return json({ ok: false, error: e.message }, { status: 502, headers: CORS_HEADERS });
   }
 };
