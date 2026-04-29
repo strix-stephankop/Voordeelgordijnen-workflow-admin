@@ -253,8 +253,13 @@ function toDisplayValues(line) {
 
   let knipmaatLeft, knipmaatRight;
   if (isOG) {
-    const roundedLeft = Math.ceil((line.panelsLeft || 0) * 2) / 2;
-    const roundedRight = Math.ceil((line.panelsRight || 0) * 2) / 2;
+    const isSinglePart = (line.panelDivision || "").toLowerCase().includes("1 part");
+    const roundedLeft = isSinglePart
+      ? Math.ceil(line.panelsLeft || 0)
+      : Math.ceil((line.panelsLeft || 0) * 2) / 2;
+    const roundedRight = isSinglePart
+      ? Math.ceil(line.panelsRight || 0)
+      : Math.ceil((line.panelsRight || 0) * 2) / 2;
     const totalPanels = roundedLeft + roundedRight;
     const knipmaat = totalPanels > 0 ? Math.round(((heightMm + 250) * totalPanels) / 10) : 0;
     const divRight = (line.panelDivision || "").toLowerCase().includes("right");
@@ -375,8 +380,9 @@ function OrderLine({ line }) {
           } else if (field === "panelsLeft" || field === "panelsRight") {
             const newLeft = field === "panelsLeft" ? (Number(val) || 0) : (Number(prev.panelsLeft) || 0);
             const newRight = field === "panelsRight" ? (Number(val) || 0) : (Number(prev.panelsRight) || 0);
-            const roundedLeft = Math.ceil(newLeft * 2) / 2;
-            const roundedRight = Math.ceil(newRight * 2) / 2;
+            const isSinglePart = (line.panelDivision || "").toLowerCase().includes("1 part");
+            const roundedLeft = isSinglePart ? Math.ceil(newLeft) : Math.ceil(newLeft * 2) / 2;
+            const roundedRight = isSinglePart ? Math.ceil(newRight) : Math.ceil(newRight * 2) / 2;
             const knipmaat = (roundedLeft + roundedRight) * perPanel;
 
             const divRight = (line.panelDivision || "").toLowerCase().includes("right");
