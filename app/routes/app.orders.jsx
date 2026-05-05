@@ -502,6 +502,7 @@ function OrderCard({ order, lines, shop, highlighted, errorExit, readOnly, supab
   const [archiving, setArchiving] = useState(false);
   const [exiting, setExiting] = useState(false);
   const [actionDone, setActionDone] = useState(null); // "print" | "archive" | "error" | null
+  const [exitHeight, setExitHeight] = useState(null);
   const cardRef = useRef(null);
 
   useEffect(() => {
@@ -512,6 +513,7 @@ function OrderCard({ order, lines, shop, highlighted, errorExit, readOnly, supab
 
   useEffect(() => {
     if (errorExit && !actionDone) {
+      if (cardRef.current) setExitHeight(cardRef.current.offsetHeight);
       setActionDone("Error");
       setTimeout(() => setExiting(true), 600);
     }
@@ -523,6 +525,7 @@ function OrderCard({ order, lines, shop, highlighted, errorExit, readOnly, supab
   const date = formatDate(order.created_at);
 
   function triggerExit(label) {
+    if (cardRef.current) setExitHeight(cardRef.current.offsetHeight);
     setActionDone(label);
     setTimeout(() => setExiting(true), 600);
   }
@@ -615,7 +618,7 @@ function OrderCard({ order, lines, shop, highlighted, errorExit, readOnly, supab
             : "2px solid transparent",
         opacity: exiting ? 0 : 1,
         transform: exiting ? "translateX(40px)" : "translateX(0)",
-        maxHeight: exiting ? "0px" : "2000px",
+        maxHeight: exiting ? "0px" : exitHeight != null ? `${exitHeight}px` : "none",
         overflow: "hidden",
       }}
     >
