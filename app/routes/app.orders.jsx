@@ -172,7 +172,7 @@ function mmToCm(mm) {
   if (mm == null || mm === "") return "—";
   const num = Number(mm);
   if (isNaN(num)) return String(mm);
-  return `${(num / 10).toFixed(1)}cm`;
+  return `${(num / 10).toFixed(1).replace(/\.0$/, "")}cm`;
 }
 
 const DIVISION_NL = {
@@ -423,6 +423,9 @@ function OrderLine({ line }) {
               <li><Text variant="bodySm" as="span">{dimensions}</Text></li>
               {line.panelDivision && (
                 <li><Text variant="bodySm" as="span">{translateDivision(line.panelDivision)}</Text></li>
+              )}
+              {String(line.panelDivision || "").toLowerCase() === "2 unequal parts" && (
+                <li><Text variant="bodySm" as="span">Links: {mmToCm(line.finishedWidthLeftInMm)}, Rechts: {mmToCm(line.finishedWidthRightInMm)}</Text></li>
               )}
               <li><Text variant="bodySm" as="span">{hangingSystem}</Text></li>
               <li><Text variant="bodySm" as="span">{plooiName}</Text></li>
