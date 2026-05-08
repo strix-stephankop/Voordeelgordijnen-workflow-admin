@@ -207,7 +207,6 @@ function parseLineDetails(line) {
   else if (codes.some((c) => c.includes("AFWPPL2"))) plooiName = "Dubbele plooi";
   else if (codes.some((c) => c.includes("AFWPPL1"))) plooiName = "Enkele plooi";
   else if (codes.some((c) => c.includes("BEVRAIL"))) plooiName = "Enkele plooi";
-  else if (codes.some((c) => c.includes("BEVRING"))) plooiName = "Enkele plooi";
 
   // Ring type
   const ringCode = details.find((d) => d.productCode?.includes("ARTRNG"))?.productCode || "";
@@ -506,6 +505,7 @@ function OrderCard({ order, lines, shop, highlighted, errorExit, readOnly, supab
   const [exiting, setExiting] = useState(false);
   const [actionDone, setActionDone] = useState(null); // "print" | "archive" | "error" | null
   const [exitHeight, setExitHeight] = useState(null);
+  const [finishOpen, setFinishOpen] = useState(false);
   const cardRef = useRef(null);
 
   useEffect(() => {
@@ -654,6 +654,9 @@ function OrderCard({ order, lines, shop, highlighted, errorExit, readOnly, supab
                 #{orderId}
               </Text>
               <Badge tone={statusTone(status)}>{status}</Badge>
+              {String(order.containsNeDistri).toLowerCase() === "true" && (
+                <Badge tone="attention">NeDistri</Badge>
+              )}
               <Text variant="bodySm" as="span" tone="subdued">
                 {date}
               </Text>
@@ -723,6 +726,15 @@ function OrderCard({ order, lines, shop, highlighted, errorExit, readOnly, supab
           </Box>
         )}
 
+        {/* Customer comment */}
+        {order.comment && (
+          <Box paddingBlockEnd="300">
+            <Banner>
+              <p>{order.comment}</p>
+            </Banner>
+          </Box>
+        )}
+
         {/* Lines */}
         {lines && lines.length > 0 ? (
           <BlockStack gap="0">
@@ -740,6 +752,51 @@ function OrderCard({ order, lines, shop, highlighted, errorExit, readOnly, supab
               <Text variant="bodySm" as="span" tone="subdued">
                 Geen lijnen gevonden voor deze order.
               </Text>
+            </Box>
+          </Box>
+        )}
+
+        {/* Finish JSON (Done orders only) */}
+        {String(status).toLowerCase() === "done" && order.finish_json != null && (
+          <Box paddingBlockStart="300">
+            <Divider />
+            <Box paddingBlockStart="300">
+              <Button
+                variant="plain"
+                disclosure={finishOpen ? "up" : "down"}
+                onClick={() => setFinishOpen((o) => !o)}
+              >
+                {finishOpen ? "Verberg afwerkingsdetails" : "Toon afwerkingsdetails"}
+              </Button>
+              {finishOpen && (
+                <Box paddingBlockStart="200">
+                  <pre
+                    style={{
+                      background: "#f6f6f7",
+                      padding: "12px",
+                      borderRadius: "8px",
+                      fontSize: "12px",
+                      maxHeight: "400px",
+                      overflow: "auto",
+                      whiteSpace: "pre-wrap",
+                      wordBreak: "break-word",
+                      margin: 0,
+                    }}
+                  >
+                    {(() => {
+                      try {
+                        const v =
+                          typeof order.finish_json === "string"
+                            ? JSON.parse(order.finish_json)
+                            : order.finish_json;
+                        return JSON.stringify(v, null, 2);
+                      } catch {
+                        return String(order.finish_json);
+                      }
+                    })()}
+                  </pre>
+                </Box>
+              )}
             </Box>
           </Box>
         )}

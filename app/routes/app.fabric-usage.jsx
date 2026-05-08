@@ -42,11 +42,12 @@ function getYearOptions() {
 }
 
 function calculateMeters(line) {
-  const cutLeft = Number(line.cutSizeLeftInMm) || 0;
-  const cutRight = Number(line.cutSizeRightInMm) || 0;
-  const totalMm = cutLeft + cutRight;
+  // Despite the field name, cutSize{Left,Right}InMm is stored in cm.
+  const cutLeftCm = Number(line.cutSizeLeftInMm) || 0;
+  const cutRightCm = Number(line.cutSizeRightInMm) || 0;
+  const totalCm = cutLeftCm + cutRightCm;
   const qty = Number(line.quantity) || 1;
-  return (totalMm / 1000) * qty;
+  return (totalCm / 100) * qty;
 }
 
 export const loader = async ({ request }) => {
@@ -506,18 +507,37 @@ export default function FabricUsage() {
               </Text>
               <Box padding="300" background="bg-surface-secondary" borderRadius="200">
                 <Text variant="bodyMd" as="p" fontWeight="semibold">
-                  (cutSizeLeftInMm + cutSizeRightInMm) / 1000 x quantity = meters
+                  ((cutSizeLeftInMm + cutSizeRightInMm) / 100) × quantity = meters
                 </Text>
               </Box>
               <Text variant="bodyMd" as="p">
-                De knipmaat links en rechts (in millimeters) worden opgeteld, omgerekend naar meters, en vermenigvuldigd met het aantal (quantity) van de lijn.
+                Stap voor stap:
+              </Text>
+              <Text variant="bodyMd" as="p">
+                1. <strong>cutSizeLeftInMm</strong> en <strong>cutSizeRightInMm</strong> worden uit de lijn gelezen. Lege of niet-numerieke waarden worden als <strong>0</strong> behandeld.
+              </Text>
+              <Text variant="bodyMd" as="p">
+                2. De twee knipmaten worden opgeteld. Let op: ondanks de veldnaam <em>"InMm"</em> worden deze waarden in <strong>centimeters</strong> opgeslagen, daarom wordt er gedeeld door 100 (en niet door 1000) om naar meters om te zetten.
+              </Text>
+              <Text variant="bodyMd" as="p">
+                3. Het resultaat in meters wordt vermenigvuldigd met <strong>quantity</strong> (het aantal van de orderlijn). Als quantity ontbreekt of 0 is, wordt er met <strong>1</strong> gerekend.
+              </Text>
+              <Text variant="bodyMd" as="p" tone="subdued">
+                Voorbeeld: cutSizeLeft = 150, cutSizeRight = 150, quantity = 2 → ((150 + 150) / 100) × 2 = 6 meter.
               </Text>
             </BlockStack>
 
             <BlockStack gap="200">
               <Text variant="headingSm" as="h3">Groepering</Text>
               <Text variant="bodyMd" as="p">
-                Lijnen worden gegroepeerd op <strong>productTitle</strong> (productnaam). Alle lijnen met dezelfde productnaam worden samengeteld tot een totaal aantal meters.
+                Lijnen worden gegroepeerd op <strong>productTitle</strong> (productnaam). Alle lijnen met dezelfde productnaam worden samengeteld tot een totaal aantal meters. Lijnen zonder productTitle worden gegroepeerd onder <strong>"Onbekend"</strong>.
+              </Text>
+            </BlockStack>
+
+            <BlockStack gap="200">
+              <Text variant="headingSm" as="h3">Bekende beperkingen</Text>
+              <Text variant="bodyMd" as="p">
+                Voor producten met <strong>productGroupCode = "OG"</strong> (overgordijnen) wordt cutSize per paneel opgeslagen. De huidige berekening telt deze panelen nog niet mee, waardoor het verbruik voor OG-lijnen onderschat kan worden.
               </Text>
             </BlockStack>
 
