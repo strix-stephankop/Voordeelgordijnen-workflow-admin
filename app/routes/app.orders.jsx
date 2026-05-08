@@ -259,7 +259,10 @@ function toDisplayValues(line) {
     const roundedRight = isSinglePart
       ? Math.ceil(line.panelsRight || 0)
       : Math.ceil((line.panelsRight || 0) * 2) / 2;
-    const totalPanels = roundedLeft + roundedRight;
+    // Half-banen are valid only when paired across left/right (half + half = whole baan).
+    // An unpaired half (e.g. 2.5 left + 3 right = 5.5) still requires cutting a whole baan,
+    // so ceil the sum to a whole number of banen.
+    const totalPanels = Math.ceil(roundedLeft + roundedRight);
     const knipmaat = totalPanels > 0 ? Math.round(((heightMm + 250) * totalPanels) / 10) : 0;
     const divRight = (line.panelDivision || "").toLowerCase().includes("right");
     knipmaatLeft = divRight ? 0 : knipmaat;
@@ -382,7 +385,7 @@ function OrderLine({ line }) {
             const isSinglePart = (line.panelDivision || "").toLowerCase().includes("1 part");
             const roundedLeft = isSinglePart ? Math.ceil(newLeft) : Math.ceil(newLeft * 2) / 2;
             const roundedRight = isSinglePart ? Math.ceil(newRight) : Math.ceil(newRight * 2) / 2;
-            const knipmaat = (roundedLeft + roundedRight) * perPanel;
+            const knipmaat = Math.ceil(roundedLeft + roundedRight) * perPanel;
 
             const divRight = (line.panelDivision || "").toLowerCase().includes("right");
             next.knipmaatLeft = divRight ? 0 : knipmaat;
