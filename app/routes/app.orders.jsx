@@ -526,6 +526,7 @@ function OrderCard({ order, lines, shop, highlighted, errorExit, readOnly, supab
   const customerName = order["customer name"] || "—";
   const status = order.status || "—";
   const date = formatDate(order.created_at);
+  const finishDate = order.finish_time ? formatDate(order.finish_time) : null;
 
   function triggerExit(label) {
     if (cardRef.current) setExitHeight(cardRef.current.offsetHeight);
@@ -660,6 +661,11 @@ function OrderCard({ order, lines, shop, highlighted, errorExit, readOnly, supab
               <Text variant="bodySm" as="span" tone="subdued">
                 {date}
               </Text>
+              {["done", "ready for print"].includes(String(status).toLowerCase()) && finishDate && (
+                <Text variant="bodySm" as="span" tone="subdued">
+                  Finalized: {finishDate}
+                </Text>
+              )}
             </InlineStack>
             <InlineStack gap="200" blockAlign="center">
               {readOnly ? (
@@ -756,8 +762,8 @@ function OrderCard({ order, lines, shop, highlighted, errorExit, readOnly, supab
           </Box>
         )}
 
-        {/* Finish JSON (Done orders only) */}
-        {String(status).toLowerCase() === "done" && order.finish_json != null && (
+        {/* Finish JSON (Done & Ready-for-print orders) */}
+        {["done", "ready for print"].includes(String(status).toLowerCase()) && order.finish_json != null && (
           <Box paddingBlockStart="300">
             <Divider />
             <Box paddingBlockStart="300">
