@@ -17,6 +17,7 @@ export const NAV_PAGES = [
   { key: "softr", to: "/app/softr", label: "Softr" },
   { key: "fabric-usage", to: "/app/fabric-usage", label: "Stofverbruik" },
   { key: "metafield-check", to: "/app/metafield-check", label: "Metafield Check" },
+  { key: "vooraf-betalen-check", to: "/app/vooraf-betalen-check", label: "Vooraf betalen per factuur check" },
 ];
 
 export const links = () => [{ rel: "stylesheet", href: polarisStyles }];

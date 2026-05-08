@@ -1,0 +1,459 @@
+import { json } from "@remix-run/node";
+import { useLoaderData, useSearchParams, useNavigation } from "@remix-run/react";
+import { useState, useCallback, useMemo } from "react";
+import {
+  Page,
+  Card,
+  Text,
+  BlockStack,
+  InlineStack,
+  Spinner,
+  Banner,
+  TextField,
+  Button,
+  Box,
+  Badge,
+  Tabs,
+  Icon,
+} from "@shopify/polaris";
+import { SearchIcon } from "@shopify/polaris-icons";
+import { TitleBar } from "@shopify/app-bridge-react";
+import { authenticate } from "../shopify.server";
+import supabase from "../supabase.server";
+
+const PAGE_SIZE = 50;
+const MAX_ORDERS = 250;
+const TAG = "vooraf betalen per factuur";
+
+const ORDERS_QUERY = `
+  query VoorafBetalenCheck($first: Int!, $after: String, $query: String) {
+    orders(first: $first, after: $after, query: $query, sortKey: CREATED_AT, reverse: true) {
+      edges {
+        node {
+          id
+          name
+          createdAt
+          tags
+          productionDestination: metafield(namespace: "custom", key: "production_destination") {
+            value
+          }
+        }
+        cursor
+      }
+      pageInfo {
+        hasNextPage
+      }
+    }
+  }
+`;
+
+function classifyDestinations(order) {
+  const dest = order.productionDestination?.value || "";
+  const tags = (order.tags || []).map((t) => t.toLowerCase());
+  const out = [];
+  if (dest === "WA") out.push("WA");
+  if (dest === "GH") out.push("GH");
+  if (dest === "HKL") out.push("HKL");
+  if (tags.includes("kleurstaal")) out.push("KL");
+  if (tags.includes("ne-distriservice")) out.push("NE");
+  return out;
+}
+
+function parseOrderNumber(name) {
+  if (!name) return null;
+  const m = String(name).match(/(\d+)\s*$/);
+  return m ? parseInt(m[1], 10) : null;
+}
+
+function numericGid(gid) {
+  return String(gid || "").replace("gid://shopify/Order/", "");
+}
+
+async function fetchAllTaggedOrders(admin, search) {
+  let query = `tag:"${TAG}"`;
+  if (search) query = `${search} ${query}`;
+
+  const collected = [];
+  let after = null;
+  let capped = false;
+
+  while (collected.length < MAX_ORDERS) {
+    const response = await admin.graphql(ORDERS_QUERY, {
+      variables: { first: PAGE_SIZE, after, query },
+    });
+    const { data } = await response.json();
+    const edges = data.orders.edges;
+    for (const { node, cursor } of edges) {
+      collected.push({ node, cursor });
+      if (collected.length >= MAX_ORDERS) {
+        capped = data.orders.pageInfo.hasNextPage || edges.indexOf(edges[edges.length - 1]) > 0;
+        break;
+      }
+    }
+    if (!data.orders.pageInfo.hasNextPage) break;
+    after = edges.length ? edges[edges.length - 1].cursor : null;
+    if (!after) break;
+  }
+
+  return { edges: collected, capped };
+}
+
+async function checkPresence(orders) {
+  const waIds = [];
+  const neIds = [];
+  const klNumbers = [];
+  const ghNumbers = [];
+  const hklNumbers = [];
+
+  for (const o of orders) {
+    if (o.destinations.includes("WA")) waIds.push(o.numericId);
+    if (o.destinations.includes("NE")) neIds.push(o.numericId);
+    if (o.destinations.includes("KL") && o.orderNumber != null) klNumbers.push(o.orderNumber);
+    if (o.destinations.includes("GH") && o.orderNumber != null) ghNumbers.push(String(o.orderNumber));
+    if (o.destinations.includes("HKL") && o.orderNumber != null) hklNumbers.push(String(o.orderNumber));
+  }
+
+  const present = {
+    WA: new Set(),
+    NE: new Set(),
+    KL: new Set(),
+    GH: new Set(),
+    HKL: new Set(),
+  };
+
+  const queries = [];
+
+  if (waIds.length) {
+    queries.push(
+      supabase
+        .from("Webattelier - lines")
+        .select("orderId")
+        .in("orderId", waIds)
+        .then(({ data }) => {
+          for (const r of data || []) present.WA.add(String(r.orderId));
+        }),
+    );
+  }
+  if (neIds.length) {
+    queries.push(
+      supabase
+        .from("nedistri")
+        .select("orderId")
+        .in("orderId", neIds)
+        .then(({ data }) => {
+          for (const r of data || []) present.NE.add(String(r.orderId));
+        }),
+    );
+  }
+  if (klNumbers.length) {
+    queries.push(
+      supabase
+        .from("Kleurstalen")
+        .select("orderNumber")
+        .in("orderNumber", klNumbers)
+        .then(({ data }) => {
+          for (const r of data || []) present.KL.add(String(r.orderNumber));
+        }),
+    );
+  }
+  if (ghNumbers.length) {
+    queries.push(
+      supabase
+        .from("grandhome")
+        .select("ordernumber")
+        .in("ordernumber", ghNumbers)
+        .then(({ data }) => {
+          for (const r of data || []) present.GH.add(String(r.ordernumber));
+        }),
+    );
+  }
+  if (hklNumbers.length) {
+    queries.push(
+      supabase
+        .from("hkl")
+        .select("ordernumber")
+        .in("ordernumber", hklNumbers)
+        .then(({ data }) => {
+          for (const r of data || []) present.HKL.add(String(r.ordernumber));
+        }),
+    );
+  }
+
+  await Promise.all(queries);
+
+  return orders.map((o) => {
+    const checks = o.destinations.map((d) => {
+      const key = d === "WA" || d === "NE" ? String(o.numericId) : String(o.orderNumber ?? "");
+      return { destination: d, found: present[d].has(key) };
+    });
+    return { ...o, checks };
+  });
+}
+
+function bucketOrder(order) {
+  if (order.destinations.length === 0) return "none";
+  const allFound = order.checks.every((c) => c.found);
+  return allFound ? "present" : "missing";
+}
+
+export const loader = async ({ request }) => {
+  const { admin, session } = await authenticate.admin(request);
+
+  const url = new URL(request.url);
+  const search = url.searchParams.get("q") || "";
+
+  try {
+    const { edges, capped } = await fetchAllTaggedOrders(admin, search);
+
+    const baseOrders = edges.map(({ node }) => {
+      const numericId = numericGid(node.id);
+      const orderNumber = parseOrderNumber(node.name);
+      return {
+        id: node.id,
+        numericId,
+        name: node.name,
+        createdAt: node.createdAt,
+        tags: node.tags || [],
+        productionDestination: node.productionDestination?.value || null,
+        orderNumber,
+        destinations: classifyDestinations(node),
+      };
+    });
+
+    const checked = await checkPresence(baseOrders);
+    const buckets = { missing: [], present: [], none: [] };
+    for (const o of checked) buckets[bucketOrder(o)].push(o);
+
+    return json({
+      buckets,
+      total: checked.length,
+      capped,
+      search,
+      shop: session.shop,
+      error: null,
+    });
+  } catch (e) {
+    console.error("Failed to load vooraf-betalen check:", e.message);
+    return json({
+      buckets: { missing: [], present: [], none: [] },
+      total: 0,
+      capped: false,
+      search,
+      shop: session.shop,
+      error: e.message,
+    });
+  }
+};
+
+function StatusBadge({ destination, found }) {
+  return found ? (
+    <Badge tone="success">{`${destination} ✓`}</Badge>
+  ) : (
+    <Badge tone="critical">{`${destination} ontbreekt`}</Badge>
+  );
+}
+
+function formatDate(value) {
+  if (!value) return "—";
+  try {
+    return new Date(value).toLocaleString("nl-NL", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    return String(value);
+  }
+}
+
+const TAB_DEFS = [
+  { id: "missing", label: "Ontbreekt in DB" },
+  { id: "present", label: "Aanwezig in DB" },
+  { id: "none", label: "Geen bestemming" },
+];
+
+export default function VoorafBetalenCheck() {
+  const { buckets, total, capped, search, error } = useLoaderData();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const navigation = useNavigation();
+  const isLoading = navigation.state === "loading";
+
+  const [searchValue, setSearchValue] = useState(search || "");
+
+  const tabId = searchParams.get("tab");
+  const activeTabId = TAB_DEFS.find((t) => t.id === tabId)?.id || "missing";
+  const activeIndex = TAB_DEFS.findIndex((t) => t.id === activeTabId);
+
+  const tabs = useMemo(
+    () =>
+      TAB_DEFS.map((t) => ({
+        id: t.id,
+        content: `${t.label} (${buckets[t.id]?.length ?? 0})`,
+      })),
+    [buckets],
+  );
+
+  const visibleOrders = buckets[activeTabId] || [];
+
+  const handleTabChange = useCallback(
+    (index) => {
+      const params = new URLSearchParams(searchParams);
+      params.set("tab", TAB_DEFS[index].id);
+      setSearchParams(params);
+    },
+    [searchParams, setSearchParams],
+  );
+
+  const handleSearch = useCallback(() => {
+    const params = new URLSearchParams();
+    if (searchValue) params.set("q", searchValue);
+    if (activeTabId !== "missing") params.set("tab", activeTabId);
+    setSearchParams(params);
+  }, [searchValue, activeTabId, setSearchParams]);
+
+  const handleSearchKeyDown = useCallback(
+    (e) => {
+      if (e.key === "Enter") handleSearch();
+    },
+    [handleSearch],
+  );
+
+  const handleClear = useCallback(() => {
+    setSearchValue("");
+    const params = new URLSearchParams();
+    if (activeTabId !== "missing") params.set("tab", activeTabId);
+    setSearchParams(params);
+  }, [activeTabId, setSearchParams]);
+
+  return (
+    <Page fullWidth>
+      <TitleBar title="Vooraf betalen per factuur check" />
+      <BlockStack gap="400">
+        {error && (
+          <Banner tone="critical">
+            <p>{error}</p>
+          </Banner>
+        )}
+        {capped && (
+          <Banner tone="warning">
+            <p>
+              Resultaat afgekapt op {MAX_ORDERS} orders. Verfijn met de
+              zoekbalk om oudere orders te zien.
+            </p>
+          </Banner>
+        )}
+
+        {/* Title */}
+        <BlockStack gap="100">
+          <Text variant="headingXl" as="h1">
+            Vooraf betalen per factuur
+          </Text>
+          <Text variant="bodyMd" as="p" tone="subdued">
+            Orders met tag <code>{TAG}</code>. Per order wordt
+            gecontroleerd of een record bestaat in de juiste bestemmingstabel
+            (Webattelier-lines, nedistri, Kleurstalen, grandhome, hkl).
+          </Text>
+        </BlockStack>
+
+        {/* Tabs */}
+        <div className="vooraf-tabs">
+          <style>{`.vooraf-tabs .Polaris-Tabs__Wrapper { padding: 0; } .vooraf-tabs .Polaris-Tabs__Panel { padding: 0; } .vooraf-tabs .Polaris-Tabs__Outer { border: none; }`}</style>
+          <Tabs tabs={tabs} selected={activeIndex} onSelect={handleTabChange} />
+        </div>
+
+        {/* Search + meta */}
+        <InlineStack align="space-between" blockAlign="end">
+          <InlineStack gap="200" blockAlign="end">
+            <Box minWidth="400px" maxWidth="600px">
+              <div onKeyDown={handleSearchKeyDown}>
+                <TextField
+                  label=""
+                  labelHidden
+                  value={searchValue}
+                  onChange={setSearchValue}
+                  placeholder="Zoek op ordernummer..."
+                  prefix={<Icon source={SearchIcon} />}
+                  autoComplete="off"
+                  clearButton
+                  onClearButtonClick={handleClear}
+                />
+              </div>
+            </Box>
+            <Button onClick={handleSearch} variant="primary">
+              Zoeken
+            </Button>
+          </InlineStack>
+          <InlineStack gap="200">
+            <Badge>{`${total} geladen`}</Badge>
+          </InlineStack>
+        </InlineStack>
+
+        {/* Order list */}
+        <Card padding="0">
+          {isLoading ? (
+            <Box padding="800">
+              <InlineStack align="center">
+                <Spinner size="large" />
+              </InlineStack>
+            </Box>
+          ) : visibleOrders.length === 0 ? (
+            <Box padding="800">
+              <Text as="p" variant="bodyMd" tone="subdued" alignment="center">
+                Geen orders in deze categorie.
+              </Text>
+            </Box>
+          ) : (
+            <div style={{ opacity: isLoading ? 0.5 : 1, transition: "opacity 0.15s" }}>
+              <BlockStack>
+                {visibleOrders.map((order, idx) => (
+                  <Box
+                    key={order.id}
+                    padding="400"
+                    borderBlockStartWidth={idx === 0 ? "0" : "025"}
+                    borderColor="border"
+                  >
+                    <InlineStack gap="400" align="space-between" blockAlign="center" wrap={false}>
+                      <BlockStack gap="100">
+                        <InlineStack gap="200" blockAlign="center">
+                          <Button
+                            variant="plain"
+                            url={`shopify://admin/orders/${order.numericId}`}
+                            target="_top"
+                          >
+                            {order.name}
+                          </Button>
+                          <Text as="span" variant="bodySm" tone="subdued">
+                            {formatDate(order.createdAt)}
+                          </Text>
+                          {order.productionDestination && (
+                            <Badge size="small">{order.productionDestination}</Badge>
+                          )}
+                        </InlineStack>
+                        {order.destinations.length === 0 && (
+                          <Text as="span" variant="bodySm" tone="subdued">
+                            Geen bestemming (VDG/DEC of geen tag/metafield)
+                          </Text>
+                        )}
+                      </BlockStack>
+                      <InlineStack gap="100" wrap>
+                        {order.checks.map((c) => (
+                          <StatusBadge
+                            key={c.destination}
+                            destination={c.destination}
+                            found={c.found}
+                          />
+                        ))}
+                      </InlineStack>
+                    </InlineStack>
+                  </Box>
+                ))}
+              </BlockStack>
+            </div>
+          )}
+        </Card>
+      </BlockStack>
+    </Page>
+  );
+}
