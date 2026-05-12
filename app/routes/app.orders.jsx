@@ -217,8 +217,8 @@ function parseLineDetails(line) {
     "ARTRNG_ZW40": "40mm zwart",
     "ARTRNG_MS25": "25mm messing",
     "ARTRNG_MS40": "40mm messing",
-    "ARTRNG_OZ25": "25mm zilver",
-    "ARTRNG_OZ40": "40mm zilver",
+    "ARTRNG_ST25": "25mm zilver",
+    "ARTRNG_ST40": "40mm zilver",
   };
   const ringName = RING_NAMES[ringCode] || "Geen ringen";
 
@@ -252,17 +252,10 @@ function toDisplayValues(line) {
 
   let knipmaatLeft, knipmaatRight;
   if (isOG) {
-    const isSinglePart = (line.panelDivision || "").toLowerCase().includes("1 part");
-    const roundedLeft = isSinglePart
-      ? Math.ceil(line.panelsLeft || 0)
-      : Math.ceil((line.panelsLeft || 0) * 2) / 2;
-    const roundedRight = isSinglePart
-      ? Math.ceil(line.panelsRight || 0)
-      : Math.ceil((line.panelsRight || 0) * 2) / 2;
-    // Half-banen are valid only when paired across left/right (half + half = whole baan).
-    // An unpaired half (e.g. 2.5 left + 3 right = 5.5) still requires cutting a whole baan,
-    // so ceil the sum to a whole number of banen.
-    const totalPanels = Math.ceil(roundedLeft + roundedRight);
+    // Fractional banen on left and right can be cut from a shared baan when their
+    // sum is whole (e.g. 1.25 + 1.75 = 3, or 1.5 + 1.5 = 3). Any leftover fraction
+    // still requires a full baan, so ceil the combined total.
+    const totalPanels = Math.ceil((line.panelsLeft || 0) + (line.panelsRight || 0));
     const knipmaat = totalPanels > 0 ? Math.round(((heightMm + 250) * totalPanels) / 10) : 0;
     const divRight = (line.panelDivision || "").toLowerCase().includes("right");
     knipmaatLeft = divRight ? 0 : knipmaat;
