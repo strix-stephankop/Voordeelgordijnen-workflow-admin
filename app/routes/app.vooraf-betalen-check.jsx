@@ -260,7 +260,7 @@ const TAB_DEFS = [
 ];
 
 export default function VoorafBetalenCheck() {
-  const { buckets, total, capped, search, error } = useLoaderData();
+  const { buckets, total, capped, search, error, shop } = useLoaderData();
   const [searchParams, setSearchParams] = useSearchParams();
   const navigation = useNavigation();
   const isLoading = navigation.state === "loading";
@@ -522,8 +522,8 @@ export default function VoorafBetalenCheck() {
                           <InlineStack gap="200" blockAlign="center">
                             <Button
                               variant="plain"
-                              url={`shopify://admin/orders/${order.numericId}`}
-                              target="_top"
+                              url={`https://${shop}/admin/orders/${order.numericId}`}
+                              target="_blank"
                             >
                               {order.name}
                             </Button>
