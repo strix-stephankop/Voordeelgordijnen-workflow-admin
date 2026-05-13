@@ -15,6 +15,7 @@ import {
   Badge,
   Tabs,
   Icon,
+  Select,
 } from "@shopify/polaris";
 import { SearchIcon } from "@shopify/polaris-icons";
 import { TitleBar } from "@shopify/app-bridge-react";
@@ -34,6 +35,7 @@ const ORDERS_QUERY = `
           name
           createdAt
           tags
+          displayFinancialStatus
           productionDestination: metafield(namespace: "custom", key: "production_destination") {
             value
           }
@@ -191,9 +193,45 @@ async function checkPresence(orders) {
 }
 
 function bucketOrder(order) {
-  if (order.destinations.length === 0) return "none";
+  // No destinations means nothing can be missing in supabase, so treat as present.
+  if (order.destinations.length === 0) return "present";
   const allFound = order.checks.every((c) => c.found);
   return allFound ? "present" : "missing";
+}
+
+const FIN_STATUS_LABEL = {
+  PAID: "Betaald",
+  PARTIALLY_PAID: "Deels betaald",
+  PENDING: "In afwachting",
+  AUTHORIZED: "Geautoriseerd",
+  PARTIALLY_REFUNDED: "Deels terugbetaald",
+  REFUNDED: "Terugbetaald",
+  VOIDED: "Geannuleerd",
+  EXPIRED: "Verlopen",
+};
+
+const FIN_STATUS_OPTIONS = [
+  { label: "Alle financiële statussen", value: "" },
+  ...Object.entries(FIN_STATUS_LABEL).map(([value, label]) => ({ label, value })),
+];
+
+function financialStatusTone(status) {
+  switch (status) {
+    case "PAID":
+      return "success";
+    case "PENDING":
+    case "AUTHORIZED":
+    case "PARTIALLY_PAID":
+      return "attention";
+    case "PARTIALLY_REFUNDED":
+    case "REFUNDED":
+      return "warning";
+    case "VOIDED":
+    case "EXPIRED":
+      return "critical";
+    default:
+      return undefined;
+  }
 }
 
 export const loader = async ({ request }) => {
@@ -214,6 +252,7 @@ export const loader = async ({ request }) => {
         name: node.name,
         createdAt: node.createdAt,
         tags: node.tags || [],
+        financialStatus: node.displayFinancialStatus || null,
         productionDestination: node.productionDestination?.value || null,
         orderNumber,
         destinations: classifyDestinations(node),
@@ -221,7 +260,7 @@ export const loader = async ({ request }) => {
     });
 
     const checked = await checkPresence(baseOrders);
-    const buckets = { missing: [], present: [], none: [] };
+    const buckets = { missing: [], present: [] };
     for (const o of checked) buckets[bucketOrder(o)].push(o);
 
     return json({
@@ -235,7 +274,7 @@ export const loader = async ({ request }) => {
   } catch (e) {
     console.error("Failed to load vooraf-betalen check:", e.message);
     return json({
-      buckets: { missing: [], present: [], none: [] },
+      buckets: { missing: [], present: [] },
       total: 0,
       capped: false,
       search,
@@ -269,9 +308,8 @@ function formatDate(value) {
 }
 
 const TAB_DEFS = [
-  { id: "missing", label: "Ontbreekt in DB" },
-  { id: "present", label: "Aanwezig in DB" },
-  { id: "none", label: "Geen bestemming" },
+  { id: "missing", label: "Openstaand" },
+  { id: "present", label: "Afgehandeld" },
 ];
 
 export default function VoorafBetalenCheck() {
@@ -286,16 +324,27 @@ export default function VoorafBetalenCheck() {
   const activeTabId = TAB_DEFS.find((t) => t.id === tabId)?.id || "missing";
   const activeIndex = TAB_DEFS.findIndex((t) => t.id === activeTabId);
 
+  const financialStatusFilter = searchParams.get("fs") || "";
+
+  const filteredBuckets = useMemo(() => {
+    if (!financialStatusFilter) return buckets;
+    const match = (o) => o.financialStatus === financialStatusFilter;
+    return {
+      missing: (buckets.missing || []).filter(match),
+      present: (buckets.present || []).filter(match),
+    };
+  }, [buckets, financialStatusFilter]);
+
   const tabs = useMemo(
     () =>
       TAB_DEFS.map((t) => ({
         id: t.id,
-        content: `${t.label} (${buckets[t.id]?.length ?? 0})`,
+        content: `${t.label} (${filteredBuckets[t.id]?.length ?? 0})`,
       })),
-    [buckets],
+    [filteredBuckets],
   );
 
-  const visibleOrders = buckets[activeTabId] || [];
+  const visibleOrders = filteredBuckets[activeTabId] || [];
 
   const handleTabChange = useCallback(
     (index) => {
@@ -310,8 +359,9 @@ export default function VoorafBetalenCheck() {
     const params = new URLSearchParams();
     if (searchValue) params.set("q", searchValue);
     if (activeTabId !== "missing") params.set("tab", activeTabId);
+    if (financialStatusFilter) params.set("fs", financialStatusFilter);
     setSearchParams(params);
-  }, [searchValue, activeTabId, setSearchParams]);
+  }, [searchValue, activeTabId, financialStatusFilter, setSearchParams]);
 
   const handleSearchKeyDown = useCallback(
     (e) => {
@@ -324,8 +374,19 @@ export default function VoorafBetalenCheck() {
     setSearchValue("");
     const params = new URLSearchParams();
     if (activeTabId !== "missing") params.set("tab", activeTabId);
+    if (financialStatusFilter) params.set("fs", financialStatusFilter);
     setSearchParams(params);
-  }, [activeTabId, setSearchParams]);
+  }, [activeTabId, financialStatusFilter, setSearchParams]);
+
+  const handleFinancialStatusChange = useCallback(
+    (value) => {
+      const params = new URLSearchParams(searchParams);
+      if (value) params.set("fs", value);
+      else params.delete("fs");
+      setSearchParams(params);
+    },
+    [searchParams, setSearchParams],
+  );
 
   return (
     <Page fullWidth>
@@ -384,6 +445,15 @@ export default function VoorafBetalenCheck() {
             <Button onClick={handleSearch} variant="primary">
               Zoeken
             </Button>
+            <Box minWidth="220px">
+              <Select
+                label=""
+                labelHidden
+                options={FIN_STATUS_OPTIONS}
+                value={financialStatusFilter}
+                onChange={handleFinancialStatusChange}
+              />
+            </Box>
           </InlineStack>
           <InlineStack gap="200">
             <Badge>{`${total} geladen`}</Badge>
@@ -427,6 +497,11 @@ export default function VoorafBetalenCheck() {
                           <Text as="span" variant="bodySm" tone="subdued">
                             {formatDate(order.createdAt)}
                           </Text>
+                          {order.financialStatus && (
+                            <Badge size="small" tone={financialStatusTone(order.financialStatus)}>
+                              {FIN_STATUS_LABEL[order.financialStatus] || order.financialStatus}
+                            </Badge>
+                          )}
                           {order.productionDestination && (
                             <Badge size="small">{order.productionDestination}</Badge>
                           )}
