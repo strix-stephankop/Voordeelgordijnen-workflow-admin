@@ -26,6 +26,9 @@ import supabase from "../supabase.server";
 const PAGE_SIZE = 50;
 const MAX_ORDERS = 250;
 const TAG = "vooraf betalen per factuur";
+const EXCLUDE_TAG = "aangepast_artikel";
+// Hard cutoff: only orders created after April 30. Older orders are out of scope.
+const MIN_CREATED_AT = "2026-05-01";
 
 const ORDERS_QUERY = `
   query VoorafBetalenCheck($first: Int!, $after: String, $query: String) {
@@ -70,7 +73,7 @@ function numericGid(gid) {
 }
 
 async function fetchAllTaggedOrders(admin, search) {
-  let query = `tag:"${TAG}"`;
+  let query = `tag:"${TAG}" -tag:"${EXCLUDE_TAG}" created_at:>=${MIN_CREATED_AT}`;
   if (search) query = `${search} ${query}`;
 
   const collected = [];
@@ -428,10 +431,11 @@ export default function VoorafBetalenCheck() {
             Vooraf betalen per factuur
           </Text>
           <Text variant="bodyMd" as="p" tone="subdued">
-            Orders met tag <code>{TAG}</code>. Per order wordt
-            gecontroleerd of het ordernummer voorkomt in één of meer
-            bestemmingstabellen (Webattelier - orders, nedistri, Kleurstalen,
-            grandhome, hkl). Eén match is genoeg om als afgehandeld te tellen.
+            Orders met tag <code>{TAG}</code> (zonder <code>{EXCLUDE_TAG}</code>)
+            vanaf <code>{MIN_CREATED_AT}</code>. Per order wordt gecontroleerd of
+            het ordernummer voorkomt in één of meer bestemmingstabellen
+            (Webattelier - orders, nedistri, Kleurstalen, grandhome, hkl). Eén
+            match is genoeg om als afgehandeld te tellen.
           </Text>
         </BlockStack>
 
