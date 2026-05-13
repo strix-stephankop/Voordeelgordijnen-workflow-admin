@@ -64,6 +64,36 @@ const ORDER_QUERY = `
   }
 `;
 
+async function fetchOrderPayload(admin, orderId) {
+  const response = await admin.graphql(ORDER_QUERY, { variables: { id: orderId } });
+  const { data } = await response.json();
+  if (!data?.order) return null;
+  const order = data.order;
+  return {
+    orderId: order.id,
+    orderName: order.name,
+    tags: order.tags,
+    email: order.email,
+    createdAt: order.createdAt,
+    customer: order.customer,
+    shippingAddress: order.shippingAddress,
+    lineItems: order.lineItems.edges.map((edge) => ({
+      id: edge.node.id,
+      title: edge.node.title,
+      quantity: edge.node.quantity,
+      variantId: edge.node.variant?.id || null,
+      variantTitle: edge.node.variant?.title || null,
+      sku: edge.node.variant?.sku || null,
+      price: edge.node.originalUnitPriceSet?.shopMoney?.amount || "0",
+      currency: edge.node.originalUnitPriceSet?.shopMoney?.currencyCode || "EUR",
+      properties: (edge.node.customAttributes || []).map((attr) => ({
+        key: attr.key,
+        value: attr.value || "",
+      })),
+    })),
+  };
+}
+
 export const loader = async ({ request }) => {
   if (request.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: CORS_HEADERS });
@@ -90,39 +120,21 @@ export const loader = async ({ request }) => {
   }
 
   try {
-    const response = await admin.graphql(ORDER_QUERY, {
-      variables: { id: orderId },
-    });
-    const { data } = await response.json();
-
-    if (!data?.order) {
+    const payload = await fetchOrderPayload(admin, orderId);
+    if (!payload) {
       return json({ order: null, error: "Order niet gevonden" }, { status: 404, headers: CORS_HEADERS });
     }
-
-    const order = data.order;
+    // Keep the loader's response shape (id/name) for the admin extension.
     return json({
       order: {
-        id: order.id,
-        name: order.name,
-        tags: order.tags,
-        email: order.email,
-        createdAt: order.createdAt,
-        customer: order.customer,
-        shippingAddress: order.shippingAddress,
-        lineItems: order.lineItems.edges.map((edge) => ({
-          id: edge.node.id,
-          title: edge.node.title,
-          quantity: edge.node.quantity,
-          variantId: edge.node.variant?.id || null,
-          variantTitle: edge.node.variant?.title || null,
-          sku: edge.node.variant?.sku || null,
-          price: edge.node.originalUnitPriceSet?.shopMoney?.amount || "0",
-          currency: edge.node.originalUnitPriceSet?.shopMoney?.currencyCode || "EUR",
-          properties: (edge.node.customAttributes || []).map((attr) => ({
-            key: attr.key,
-            value: attr.value || "",
-          })),
-        })),
+        id: payload.orderId,
+        name: payload.orderName,
+        tags: payload.tags,
+        email: payload.email,
+        createdAt: payload.createdAt,
+        customer: payload.customer,
+        shippingAddress: payload.shippingAddress,
+        lineItems: payload.lineItems,
       },
     }, { headers: CORS_HEADERS });
   } catch (e) {
@@ -136,8 +148,9 @@ export const action = async ({ request }) => {
     return new Response(null, { status: 204, headers: CORS_HEADERS });
   }
 
+  let admin;
   try {
-    await authenticate.admin(request);
+    ({ admin } = await authenticate.admin(request));
   } catch (authResponse) {
     if (authResponse instanceof Response) {
       return json(
@@ -148,7 +161,20 @@ export const action = async ({ request }) => {
     throw authResponse;
   }
 
-  const payload = await request.json();
+  let payload = await request.json();
+
+  // Shorthand for in-app pages: when only orderId is given, fetch the order
+  // server-side and build the full payload so callers don't need two round trips.
+  if (payload?.orderId && !payload.lineItems) {
+    const built = await fetchOrderPayload(admin, payload.orderId);
+    if (!built) {
+      return json(
+        { ok: false, error: "Order niet gevonden" },
+        { status: 404, headers: CORS_HEADERS },
+      );
+    }
+    payload = built;
+  }
 
   let webhookUrl = DEFAULT_WEBHOOK;
   try {

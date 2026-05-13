@@ -1,6 +1,6 @@
 import { json } from "@remix-run/node";
-import { useLoaderData, useSearchParams, useNavigation } from "@remix-run/react";
-import { useState, useCallback, useMemo } from "react";
+import { useLoaderData, useSearchParams, useNavigation, useFetcher } from "@remix-run/react";
+import { useState, useCallback, useMemo, useEffect } from "react";
 import {
   Page,
   Card,
@@ -16,6 +16,7 @@ import {
   Tabs,
   Icon,
   Select,
+  Modal,
 } from "@shopify/polaris";
 import { SearchIcon } from "@shopify/polaris-icons";
 import { TitleBar } from "@shopify/app-bridge-react";
@@ -388,6 +389,35 @@ export default function VoorafBetalenCheck() {
     [searchParams, setSearchParams],
   );
 
+  const resubmitFetcher = useFetcher();
+  const [confirmOrder, setConfirmOrder] = useState(null);
+  const [resubmittingId, setResubmittingId] = useState(null);
+
+  const handleResubmit = useCallback(() => {
+    if (!confirmOrder) return;
+    setResubmittingId(confirmOrder.id);
+    resubmitFetcher.submit(
+      { orderId: confirmOrder.id },
+      { method: "POST", action: "/app/resubmit-order", encType: "application/json" },
+    );
+    setConfirmOrder(null);
+  }, [confirmOrder, resubmitFetcher]);
+
+  useEffect(() => {
+    if (resubmitFetcher.state !== "idle" || !resubmitFetcher.data || !resubmittingId) return;
+    if (resubmitFetcher.data.ok) {
+      shopify.toast.show("Order opnieuw aangeboden");
+    } else {
+      shopify.toast.show(
+        "Bieden mislukt: " + (resubmitFetcher.data.error || "onbekende fout"),
+        { isError: true },
+      );
+    }
+    setResubmittingId(null);
+  }, [resubmitFetcher.state, resubmitFetcher.data, resubmittingId]);
+
+  const isResubmitting = resubmitFetcher.state !== "idle";
+
   return (
     <Page fullWidth>
       <TitleBar title="Vooraf betalen per factuur check" />
@@ -512,14 +542,24 @@ export default function VoorafBetalenCheck() {
                           </Text>
                         )}
                       </BlockStack>
-                      <InlineStack gap="100" wrap>
-                        {order.checks.map((c) => (
-                          <StatusBadge
-                            key={c.destination}
-                            destination={c.destination}
-                            found={c.found}
-                          />
-                        ))}
+                      <InlineStack gap="200" blockAlign="center" wrap={false}>
+                        <InlineStack gap="100" wrap>
+                          {order.checks.map((c) => (
+                            <StatusBadge
+                              key={c.destination}
+                              destination={c.destination}
+                              found={c.found}
+                            />
+                          ))}
+                        </InlineStack>
+                        <Button
+                          size="slim"
+                          loading={resubmittingId === order.id}
+                          disabled={isResubmitting && resubmittingId !== order.id}
+                          onClick={() => setConfirmOrder(order)}
+                        >
+                          Bied opnieuw aan
+                        </Button>
                       </InlineStack>
                     </InlineStack>
                   </Box>
@@ -529,6 +569,26 @@ export default function VoorafBetalenCheck() {
           )}
         </Card>
       </BlockStack>
+
+      <Modal
+        open={confirmOrder !== null}
+        onClose={() => setConfirmOrder(null)}
+        title={`Order ${confirmOrder?.name ?? ""} opnieuw aanbieden?`}
+        primaryAction={{
+          content: "Bevestig & bied aan",
+          onAction: handleResubmit,
+          loading: isResubmitting,
+        }}
+        secondaryActions={[{ content: "Annuleren", onAction: () => setConfirmOrder(null) }]}
+      >
+        <Modal.Section>
+          <Text as="p" variant="bodyMd">
+            De volledige order wordt opnieuw naar de webhook gestuurd. Alle line
+            items en eigenschappen gaan mee, net als via de admin-actie "Bied
+            opnieuw aan".
+          </Text>
+        </Modal.Section>
+      </Modal>
     </Page>
   );
 }
