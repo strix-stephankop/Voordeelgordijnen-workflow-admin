@@ -37,9 +37,6 @@ const ORDERS_QUERY = `
           createdAt
           tags
           displayFinancialStatus
-          productionDestination: metafield(namespace: "custom", key: "production_destination") {
-            value
-          }
         }
         cursor
       }
@@ -50,16 +47,17 @@ const ORDERS_QUERY = `
   }
 `;
 
-function classifyDestinations(order) {
-  const dest = order.productionDestination?.value || "";
-  const tags = (order.tags || []).map((t) => t.toLowerCase());
-  const out = [];
-  if (dest === "WA") out.push("WA");
-  if (dest === "GH") out.push("GH");
-  if (dest === "HKL") out.push("HKL");
-  if (tags.includes("kleurstaal")) out.push("KL");
-  return out;
-}
+// One lookup key per order (the order number), checked against every supabase
+// table. Each table stores it under a different column name and data type.
+const DEST_ORDER = ["WA", "NE", "KL", "GH", "HKL"];
+
+const DEST_INFO = {
+  WA: { table: "Webattelier - orders", keyField: "id", keyType: "number" },
+  NE: { table: "nedistri", keyField: "orderNumber", keyType: "number" },
+  KL: { table: "Kleurstalen", keyField: "orderNumber", keyType: "number" },
+  GH: { table: "grandhome", keyField: "ordernumber", keyType: "string" },
+  HKL: { table: "hkl", keyField: "ordernumber", keyType: "string" },
+};
 
 function parseOrderNumber(name) {
   if (!name) return null;
@@ -101,97 +99,40 @@ async function fetchAllTaggedOrders(admin, search) {
 }
 
 async function checkPresence(orders) {
-  const waIds = [];
-  const klNumbers = [];
-  const ghNumbers = [];
-  const hklNumbers = [];
+  const orderNumbers = orders.map((o) => o.orderNumber).filter((n) => n != null);
 
-  for (const o of orders) {
-    if (o.destinations.includes("WA")) waIds.push(o.numericId);
-    if (o.destinations.includes("KL") && o.orderNumber != null) klNumbers.push(o.orderNumber);
-    if (o.destinations.includes("GH") && o.orderNumber != null) ghNumbers.push(String(o.orderNumber));
-    if (o.destinations.includes("HKL") && o.orderNumber != null) hklNumbers.push(String(o.orderNumber));
-  }
+  const present = {};
+  for (const d of DEST_ORDER) present[d] = new Set();
 
-  const present = {
-    WA: new Set(),
-    KL: new Set(),
-    GH: new Set(),
-    HKL: new Set(),
-  };
-
-  const queries = [];
-
-  if (waIds.length) {
-    queries.push(
-      supabase
-        .from("Webattelier - lines")
-        .select("orderId")
-        .in("orderId", waIds)
+  if (orderNumbers.length > 0) {
+    const queries = DEST_ORDER.map((d) => {
+      const info = DEST_INFO[d];
+      const values =
+        info.keyType === "string" ? orderNumbers.map(String) : orderNumbers;
+      return supabase
+        .from(info.table)
+        .select(info.keyField)
+        .in(info.keyField, values)
         .then(({ data }) => {
-          for (const r of data || []) present.WA.add(String(r.orderId));
-        }),
-    );
+          for (const r of data || []) present[d].add(String(r[info.keyField]));
+        });
+    });
+    await Promise.all(queries);
   }
-  if (klNumbers.length) {
-    queries.push(
-      supabase
-        .from("Kleurstalen")
-        .select("orderNumber")
-        .in("orderNumber", klNumbers)
-        .then(({ data }) => {
-          for (const r of data || []) present.KL.add(String(r.orderNumber));
-        }),
-    );
-  }
-  if (ghNumbers.length) {
-    queries.push(
-      supabase
-        .from("grandhome")
-        .select("ordernumber")
-        .in("ordernumber", ghNumbers)
-        .then(({ data }) => {
-          for (const r of data || []) present.GH.add(String(r.ordernumber));
-        }),
-    );
-  }
-  if (hklNumbers.length) {
-    queries.push(
-      supabase
-        .from("hkl")
-        .select("ordernumber")
-        .in("ordernumber", hklNumbers)
-        .then(({ data }) => {
-          for (const r of data || []) present.HKL.add(String(r.ordernumber));
-        }),
-    );
-  }
-
-  await Promise.all(queries);
 
   return orders.map((o) => {
-    const checks = o.destinations.map((d) => {
-      const key = d === "WA" ? String(o.numericId) : String(o.orderNumber ?? "");
-      return { destination: d, found: present[d].has(key) };
-    });
+    const key = String(o.orderNumber ?? "");
+    const checks = DEST_ORDER.map((d) => ({
+      destination: d,
+      found: present[d].has(key),
+    }));
     return { ...o, checks };
   });
 }
 
-const DEST_INFO = {
-  WA: { table: "Webattelier - lines", keyField: "orderId", keyFrom: "numericId" },
-  KL: { table: "Kleurstalen", keyField: "orderNumber", keyFrom: "orderNumber" },
-  GH: { table: "grandhome", keyField: "ordernumber", keyFrom: "orderNumber" },
-  HKL: { table: "hkl", keyField: "ordernumber", keyFrom: "orderNumber" },
-};
-
 function bucketOrder(order) {
-  // Openstaand = no matching supabase records yet. Afgehandeld = every classified
-  // destination has its record. Orders without any classification can't have
-  // matches, so they stay in Openstaand.
-  const hasMatches =
-    order.destinations.length > 0 && order.checks.every((c) => c.found);
-  return hasMatches ? "present" : "missing";
+  // Any matching supabase record → Afgehandeld. Zero matches → Openstaand.
+  return order.checks.some((c) => c.found) ? "present" : "missing";
 }
 
 const FIN_STATUS_LABEL = {
@@ -258,9 +199,7 @@ export const loader = async ({ request }) => {
         createdAt: node.createdAt,
         tags: node.tags || [],
         financialStatus: node.displayFinancialStatus || null,
-        productionDestination: node.productionDestination?.value || null,
         orderNumber,
-        destinations: classifyDestinations(node),
       };
     });
 
@@ -490,8 +429,9 @@ export default function VoorafBetalenCheck() {
           </Text>
           <Text variant="bodyMd" as="p" tone="subdued">
             Orders met tag <code>{TAG}</code>. Per order wordt
-            gecontroleerd of een record bestaat in de juiste bestemmingstabel
-            (Webattelier-lines, Kleurstalen, grandhome, hkl).
+            gecontroleerd of het ordernummer voorkomt in één of meer
+            bestemmingstabellen (Webattelier - orders, nedistri, Kleurstalen,
+            grandhome, hkl). Eén match is genoeg om als afgehandeld te tellen.
           </Text>
         </BlockStack>
 
@@ -591,15 +531,7 @@ export default function VoorafBetalenCheck() {
                                 {FIN_STATUS_LABEL[order.financialStatus] || order.financialStatus}
                               </Badge>
                             )}
-                            {order.productionDestination && (
-                              <Badge size="small">{order.productionDestination}</Badge>
-                            )}
                           </InlineStack>
-                          {order.destinations.length === 0 && (
-                            <Text as="span" variant="bodySm" tone="subdued">
-                              Geen bestemming (VDG/DEC of geen tag/metafield)
-                            </Text>
-                          )}
                         </BlockStack>
                         <InlineStack gap="200" blockAlign="center" wrap={false}>
                           <InlineStack gap="100" wrap>
@@ -638,50 +570,24 @@ export default function VoorafBetalenCheck() {
                           background="bg-surface-secondary"
                           borderRadius="200"
                         >
-                          <BlockStack gap="300">
-                            <BlockStack gap="100">
-                              <Text as="span" variant="bodyMd" fontWeight="semibold">
-                                Supabase-records
-                              </Text>
-                              {order.checks.length === 0 ? (
-                                <Text as="span" variant="bodySm" tone="subdued">
-                                  Geen bestemming geclassificeerd — er valt niets te koppelen in supabase.
-                                </Text>
-                              ) : (
-                                order.checks.map((c) => {
-                                  const info = DEST_INFO[c.destination];
-                                  const lookupKey =
-                                    info?.keyFrom === "numericId"
-                                      ? order.numericId
-                                      : order.orderNumber;
-                                  return (
-                                    <InlineStack key={c.destination} gap="200" blockAlign="center">
-                                      <Badge size="small" tone={c.found ? "success" : "critical"}>
-                                        {c.destination}
-                                      </Badge>
-                                      <Text as="span" variant="bodySm" tone="subdued">
-                                        {c.found ? "gevonden in" : "ontbreekt in"}{" "}
-                                        <code>{info?.table ?? "(onbekend)"}</code>{" "}
-                                        ({info?.keyField ?? "?"}: {lookupKey ?? "—"})
-                                      </Text>
-                                    </InlineStack>
-                                  );
-                                })
-                              )}
-                            </BlockStack>
-                            <BlockStack gap="100">
-                              <Text as="span" variant="bodyMd" fontWeight="semibold">
-                                Classificatie-bron
-                              </Text>
-                              <Text as="span" variant="bodySm" tone="subdued">
-                                production_destination metafield:{" "}
-                                {order.productionDestination ?? "(niet ingesteld)"}
-                              </Text>
-                              <Text as="span" variant="bodySm" tone="subdued">
-                                kleurstaal tag:{" "}
-                                {(order.tags || []).includes("kleurstaal") ? "aanwezig" : "afwezig"}
-                              </Text>
-                            </BlockStack>
+                          <BlockStack gap="100">
+                            <Text as="span" variant="bodyMd" fontWeight="semibold">
+                              Supabase-records (lookup op ordernummer {order.orderNumber ?? "—"})
+                            </Text>
+                            {order.checks.map((c) => {
+                              const info = DEST_INFO[c.destination];
+                              return (
+                                <InlineStack key={c.destination} gap="200" blockAlign="center">
+                                  <Badge size="small" tone={c.found ? "success" : "critical"}>
+                                    {c.destination}
+                                  </Badge>
+                                  <Text as="span" variant="bodySm" tone="subdued">
+                                    {c.found ? "gevonden in" : "ontbreekt in"}{" "}
+                                    <code>{info.table}</code> ({info.keyField})
+                                  </Text>
+                                </InlineStack>
+                              );
+                            })}
                           </BlockStack>
                         </Box>
                       )}
