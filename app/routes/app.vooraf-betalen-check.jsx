@@ -58,7 +58,6 @@ function classifyDestinations(order) {
   if (dest === "GH") out.push("GH");
   if (dest === "HKL") out.push("HKL");
   if (tags.includes("kleurstaal")) out.push("KL");
-  if (tags.includes("ne-distriservice")) out.push("NE");
   return out;
 }
 
@@ -103,14 +102,12 @@ async function fetchAllTaggedOrders(admin, search) {
 
 async function checkPresence(orders) {
   const waIds = [];
-  const neIds = [];
   const klNumbers = [];
   const ghNumbers = [];
   const hklNumbers = [];
 
   for (const o of orders) {
     if (o.destinations.includes("WA")) waIds.push(o.numericId);
-    if (o.destinations.includes("NE")) neIds.push(o.numericId);
     if (o.destinations.includes("KL") && o.orderNumber != null) klNumbers.push(o.orderNumber);
     if (o.destinations.includes("GH") && o.orderNumber != null) ghNumbers.push(String(o.orderNumber));
     if (o.destinations.includes("HKL") && o.orderNumber != null) hklNumbers.push(String(o.orderNumber));
@@ -118,7 +115,6 @@ async function checkPresence(orders) {
 
   const present = {
     WA: new Set(),
-    NE: new Set(),
     KL: new Set(),
     GH: new Set(),
     HKL: new Set(),
@@ -134,17 +130,6 @@ async function checkPresence(orders) {
         .in("orderId", waIds)
         .then(({ data }) => {
           for (const r of data || []) present.WA.add(String(r.orderId));
-        }),
-    );
-  }
-  if (neIds.length) {
-    queries.push(
-      supabase
-        .from("nedistri")
-        .select("orderId")
-        .in("orderId", neIds)
-        .then(({ data }) => {
-          for (const r of data || []) present.NE.add(String(r.orderId));
         }),
     );
   }
@@ -186,7 +171,7 @@ async function checkPresence(orders) {
 
   return orders.map((o) => {
     const checks = o.destinations.map((d) => {
-      const key = d === "WA" || d === "NE" ? String(o.numericId) : String(o.orderNumber ?? "");
+      const key = d === "WA" ? String(o.numericId) : String(o.orderNumber ?? "");
       return { destination: d, found: present[d].has(key) };
     });
     return { ...o, checks };
@@ -215,6 +200,16 @@ const FIN_STATUS_OPTIONS = [
   { label: "Alle financiële statussen", value: "" },
   ...Object.entries(FIN_STATUS_LABEL).map(([value, label]) => ({ label, value })),
 ];
+
+const MONTH_NL = [
+  "Januari", "Februari", "Maart", "April", "Mei", "Juni",
+  "Juli", "Augustus", "September", "Oktober", "November", "December",
+];
+
+function formatMonthLabel(ym) {
+  const [y, m] = ym.split("-");
+  return `${MONTH_NL[parseInt(m, 10) - 1] || m} ${y}`;
+}
 
 function financialStatusTone(status) {
   switch (status) {
@@ -325,16 +320,37 @@ export default function VoorafBetalenCheck() {
   const activeTabId = TAB_DEFS.find((t) => t.id === tabId)?.id || "missing";
   const activeIndex = TAB_DEFS.findIndex((t) => t.id === activeTabId);
 
-  const financialStatusFilter = searchParams.get("fs") || "";
+  // Absence of "fs" → default to PAID. Empty string ("fs=") → user explicitly chose "All".
+  const rawFs = searchParams.get("fs");
+  const financialStatusFilter = rawFs ?? "PAID";
+
+  const monthFilter = searchParams.get("m") || "";
+
+  const monthOptions = useMemo(() => {
+    const months = new Set();
+    for (const list of [buckets.missing || [], buckets.present || []]) {
+      for (const o of list) {
+        if (o.createdAt) months.add(o.createdAt.slice(0, 7));
+      }
+    }
+    const sorted = [...months].sort().reverse();
+    return [
+      { label: "Alle maanden", value: "" },
+      ...sorted.map((ym) => ({ label: formatMonthLabel(ym), value: ym })),
+    ];
+  }, [buckets]);
 
   const filteredBuckets = useMemo(() => {
-    if (!financialStatusFilter) return buckets;
-    const match = (o) => o.financialStatus === financialStatusFilter;
+    const match = (o) => {
+      if (financialStatusFilter && o.financialStatus !== financialStatusFilter) return false;
+      if (monthFilter && (!o.createdAt || !o.createdAt.startsWith(monthFilter))) return false;
+      return true;
+    };
     return {
       missing: (buckets.missing || []).filter(match),
       present: (buckets.present || []).filter(match),
     };
-  }, [buckets, financialStatusFilter]);
+  }, [buckets, financialStatusFilter, monthFilter]);
 
   const tabs = useMemo(
     () =>
@@ -360,9 +376,10 @@ export default function VoorafBetalenCheck() {
     const params = new URLSearchParams();
     if (searchValue) params.set("q", searchValue);
     if (activeTabId !== "missing") params.set("tab", activeTabId);
-    if (financialStatusFilter) params.set("fs", financialStatusFilter);
+    if (rawFs !== null) params.set("fs", rawFs);
+    if (monthFilter) params.set("m", monthFilter);
     setSearchParams(params);
-  }, [searchValue, activeTabId, financialStatusFilter, setSearchParams]);
+  }, [searchValue, activeTabId, rawFs, monthFilter, setSearchParams]);
 
   const handleSearchKeyDown = useCallback(
     (e) => {
@@ -375,15 +392,26 @@ export default function VoorafBetalenCheck() {
     setSearchValue("");
     const params = new URLSearchParams();
     if (activeTabId !== "missing") params.set("tab", activeTabId);
-    if (financialStatusFilter) params.set("fs", financialStatusFilter);
+    if (rawFs !== null) params.set("fs", rawFs);
+    if (monthFilter) params.set("m", monthFilter);
     setSearchParams(params);
-  }, [activeTabId, financialStatusFilter, setSearchParams]);
+  }, [activeTabId, rawFs, monthFilter, setSearchParams]);
 
   const handleFinancialStatusChange = useCallback(
     (value) => {
       const params = new URLSearchParams(searchParams);
-      if (value) params.set("fs", value);
-      else params.delete("fs");
+      // Always set explicitly: empty string means "Alle", overriding the default-PAID.
+      params.set("fs", value);
+      setSearchParams(params);
+    },
+    [searchParams, setSearchParams],
+  );
+
+  const handleMonthChange = useCallback(
+    (value) => {
+      const params = new URLSearchParams(searchParams);
+      if (value) params.set("m", value);
+      else params.delete("m");
       setSearchParams(params);
     },
     [searchParams, setSearchParams],
@@ -444,7 +472,7 @@ export default function VoorafBetalenCheck() {
           <Text variant="bodyMd" as="p" tone="subdued">
             Orders met tag <code>{TAG}</code>. Per order wordt
             gecontroleerd of een record bestaat in de juiste bestemmingstabel
-            (Webattelier-lines, nedistri, Kleurstalen, grandhome, hkl).
+            (Webattelier-lines, Kleurstalen, grandhome, hkl).
           </Text>
         </BlockStack>
 
@@ -482,6 +510,15 @@ export default function VoorafBetalenCheck() {
                 options={FIN_STATUS_OPTIONS}
                 value={financialStatusFilter}
                 onChange={handleFinancialStatusChange}
+              />
+            </Box>
+            <Box minWidth="180px">
+              <Select
+                label=""
+                labelHidden
+                options={monthOptions}
+                value={monthFilter}
+                onChange={handleMonthChange}
               />
             </Box>
           </InlineStack>
