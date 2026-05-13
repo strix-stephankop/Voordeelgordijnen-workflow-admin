@@ -18,7 +18,7 @@ import {
   Select,
   Modal,
 } from "@shopify/polaris";
-import { SearchIcon } from "@shopify/polaris-icons";
+import { SearchIcon, ChevronDownIcon, ChevronUpIcon } from "@shopify/polaris-icons";
 import { TitleBar } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
 import supabase from "../supabase.server";
@@ -178,11 +178,20 @@ async function checkPresence(orders) {
   });
 }
 
+const DEST_INFO = {
+  WA: { table: "Webattelier - lines", keyField: "orderId", keyFrom: "numericId" },
+  KL: { table: "Kleurstalen", keyField: "orderNumber", keyFrom: "orderNumber" },
+  GH: { table: "grandhome", keyField: "ordernumber", keyFrom: "orderNumber" },
+  HKL: { table: "hkl", keyField: "ordernumber", keyFrom: "orderNumber" },
+};
+
 function bucketOrder(order) {
-  // No destinations means nothing can be missing in supabase, so treat as present.
-  if (order.destinations.length === 0) return "present";
-  const allFound = order.checks.every((c) => c.found);
-  return allFound ? "present" : "missing";
+  // Openstaand = no matching supabase records yet. Afgehandeld = every classified
+  // destination has its record. Orders without any classification can't have
+  // matches, so they stay in Openstaand.
+  const hasMatches =
+    order.destinations.length > 0 && order.checks.every((c) => c.found);
+  return hasMatches ? "present" : "missing";
 }
 
 const FIN_STATUS_LABEL = {
@@ -417,6 +426,16 @@ export default function VoorafBetalenCheck() {
     [searchParams, setSearchParams],
   );
 
+  const [expandedIds, setExpandedIds] = useState(() => new Set());
+  const toggleExpanded = useCallback((id) => {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
   const resubmitFetcher = useFetcher();
   const [confirmOrder, setConfirmOrder] = useState(null);
   const [resubmittingId, setResubmittingId] = useState(null);
@@ -544,63 +563,132 @@ export default function VoorafBetalenCheck() {
           ) : (
             <div style={{ opacity: isLoading ? 0.5 : 1, transition: "opacity 0.15s" }}>
               <BlockStack>
-                {visibleOrders.map((order, idx) => (
+                {visibleOrders.map((order, idx) => {
+                  const isExpanded = expandedIds.has(order.id);
+                  return (
                   <Box
                     key={order.id}
                     padding="400"
                     borderBlockStartWidth={idx === 0 ? "0" : "025"}
                     borderColor="border"
                   >
-                    <InlineStack gap="400" align="space-between" blockAlign="center" wrap={false}>
-                      <BlockStack gap="100">
-                        <InlineStack gap="200" blockAlign="center">
+                    <BlockStack gap="300">
+                      <InlineStack gap="400" align="space-between" blockAlign="center" wrap={false}>
+                        <BlockStack gap="100">
+                          <InlineStack gap="200" blockAlign="center">
+                            <Button
+                              variant="plain"
+                              url={`shopify://admin/orders/${order.numericId}`}
+                              target="_top"
+                            >
+                              {order.name}
+                            </Button>
+                            <Text as="span" variant="bodySm" tone="subdued">
+                              {formatDate(order.createdAt)}
+                            </Text>
+                            {order.financialStatus && (
+                              <Badge size="small" tone={financialStatusTone(order.financialStatus)}>
+                                {FIN_STATUS_LABEL[order.financialStatus] || order.financialStatus}
+                              </Badge>
+                            )}
+                            {order.productionDestination && (
+                              <Badge size="small">{order.productionDestination}</Badge>
+                            )}
+                          </InlineStack>
+                          {order.destinations.length === 0 && (
+                            <Text as="span" variant="bodySm" tone="subdued">
+                              Geen bestemming (VDG/DEC of geen tag/metafield)
+                            </Text>
+                          )}
+                        </BlockStack>
+                        <InlineStack gap="200" blockAlign="center" wrap={false}>
+                          <InlineStack gap="100" wrap>
+                            {order.checks.map((c) => (
+                              <StatusBadge
+                                key={c.destination}
+                                destination={c.destination}
+                                found={c.found}
+                              />
+                            ))}
+                          </InlineStack>
                           <Button
-                            variant="plain"
-                            url={`shopify://admin/orders/${order.numericId}`}
-                            target="_top"
+                            size="slim"
+                            loading={resubmittingId === order.id}
+                            disabled={isResubmitting && resubmittingId !== order.id}
+                            onClick={() => setConfirmOrder(order)}
                           >
-                            {order.name}
+                            Bied opnieuw aan
                           </Button>
-                          <Text as="span" variant="bodySm" tone="subdued">
-                            {formatDate(order.createdAt)}
-                          </Text>
-                          {order.financialStatus && (
-                            <Badge size="small" tone={financialStatusTone(order.financialStatus)}>
-                              {FIN_STATUS_LABEL[order.financialStatus] || order.financialStatus}
-                            </Badge>
-                          )}
-                          {order.productionDestination && (
-                            <Badge size="small">{order.productionDestination}</Badge>
-                          )}
+                          <Button
+                            size="slim"
+                            variant="tertiary"
+                            icon={isExpanded ? ChevronUpIcon : ChevronDownIcon}
+                            accessibilityLabel={isExpanded ? "Verberg details" : "Toon details"}
+                            onClick={() => toggleExpanded(order.id)}
+                          />
                         </InlineStack>
-                        {order.destinations.length === 0 && (
-                          <Text as="span" variant="bodySm" tone="subdued">
-                            Geen bestemming (VDG/DEC of geen tag/metafield)
-                          </Text>
-                        )}
-                      </BlockStack>
-                      <InlineStack gap="200" blockAlign="center" wrap={false}>
-                        <InlineStack gap="100" wrap>
-                          {order.checks.map((c) => (
-                            <StatusBadge
-                              key={c.destination}
-                              destination={c.destination}
-                              found={c.found}
-                            />
-                          ))}
-                        </InlineStack>
-                        <Button
-                          size="slim"
-                          loading={resubmittingId === order.id}
-                          disabled={isResubmitting && resubmittingId !== order.id}
-                          onClick={() => setConfirmOrder(order)}
-                        >
-                          Bied opnieuw aan
-                        </Button>
                       </InlineStack>
-                    </InlineStack>
+
+                      {isExpanded && (
+                        <Box
+                          paddingInlineStart="400"
+                          paddingInlineEnd="400"
+                          paddingBlockStart="200"
+                          paddingBlockEnd="200"
+                          background="bg-surface-secondary"
+                          borderRadius="200"
+                        >
+                          <BlockStack gap="300">
+                            <BlockStack gap="100">
+                              <Text as="span" variant="bodyMd" fontWeight="semibold">
+                                Supabase-records
+                              </Text>
+                              {order.checks.length === 0 ? (
+                                <Text as="span" variant="bodySm" tone="subdued">
+                                  Geen bestemming geclassificeerd — er valt niets te koppelen in supabase.
+                                </Text>
+                              ) : (
+                                order.checks.map((c) => {
+                                  const info = DEST_INFO[c.destination];
+                                  const lookupKey =
+                                    info?.keyFrom === "numericId"
+                                      ? order.numericId
+                                      : order.orderNumber;
+                                  return (
+                                    <InlineStack key={c.destination} gap="200" blockAlign="center">
+                                      <Badge size="small" tone={c.found ? "success" : "critical"}>
+                                        {c.destination}
+                                      </Badge>
+                                      <Text as="span" variant="bodySm" tone="subdued">
+                                        {c.found ? "gevonden in" : "ontbreekt in"}{" "}
+                                        <code>{info?.table ?? "(onbekend)"}</code>{" "}
+                                        ({info?.keyField ?? "?"}: {lookupKey ?? "—"})
+                                      </Text>
+                                    </InlineStack>
+                                  );
+                                })
+                              )}
+                            </BlockStack>
+                            <BlockStack gap="100">
+                              <Text as="span" variant="bodyMd" fontWeight="semibold">
+                                Classificatie-bron
+                              </Text>
+                              <Text as="span" variant="bodySm" tone="subdued">
+                                production_destination metafield:{" "}
+                                {order.productionDestination ?? "(niet ingesteld)"}
+                              </Text>
+                              <Text as="span" variant="bodySm" tone="subdued">
+                                kleurstaal tag:{" "}
+                                {(order.tags || []).includes("kleurstaal") ? "aanwezig" : "afwezig"}
+                              </Text>
+                            </BlockStack>
+                          </BlockStack>
+                        </Box>
+                      )}
+                    </BlockStack>
                   </Box>
-                ))}
+                  );
+                })}
               </BlockStack>
             </div>
           )}
